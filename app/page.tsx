@@ -1291,8 +1291,9 @@ export default function Home() {
   async function saveSong(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!songEditor) return;
+    const formElement = event.currentTarget;
     await songAutoSaveQueue.current;
-    const payload = songPayload(event.currentTarget);
+    const payload = songPayload(formElement);
     if (!payload.title) {
       setSongError("Song Title Is Required.");
       return;
@@ -1429,8 +1430,9 @@ export default function Home() {
   async function saveText(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!textEditor) return;
+    const formElement = event.currentTarget;
     await textAutoSaveQueue.current;
-    const payload = textPayload(event.currentTarget);
+    const payload = textPayload(formElement);
     if (!payload.text) {
       setTextError("Text Is Required.");
       return;
