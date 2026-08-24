@@ -128,14 +128,33 @@ Opening a linked Song or Text from the Register displays its full-window library
 | `id` | text | primary key |
 | `text` | text | required; case-insensitive reusable name |
 | `description` | text | nullable |
-| `tags` | text | nullable comma-separated labels in version one |
 | `scripture_reference` | text | nullable |
 | `songs_for_text` | text | nullable plain text; not linked to `songs` |
 | `notes` | text | nullable |
 | `created_at` | text | required |
 | `updated_at` | text | required |
 
-A Text is reusable and does not contain service dates or completion state. `tags` uses the same normalized, comma-separated behavior as Song tags. `songs_for_text` is displayed as **Songs For This Sermon**; it is an intentionally unstructured text box and does not create Song relationships. The Texts view shows Text, Description, the first line of Scripture Reference, Tags, Times Used, Last Used, Notes, and PDF count. Times Used counts Lehr Progress starts, whether the starting service is a Lehr or Gebet; continuation services do not increase the count. Last Used is the date on which a Lehr Progress most recently started, not the latest continuation date. The view can be sorted by Text, Tags, Times Used, or Last Used in either direction. After a new Text is created once with Save Text, leaving any Text editor field automatically saves the complete Text record and shows the result in the editor. A Text editor cannot close while a PDF upload is still running. A Text may be deleted only when no service of either type references it; the server enforces this rule and removes the unused Text's PDF attachments with it.
+A Text is reusable and does not contain service dates or completion state. Sermon tags are linked through the normalized `tags` and `text_tags` tables below; the legacy comma-separated `texts.tags` column is migrated once and is not the source of truth. `songs_for_text` is displayed as **Songs For This Sermon**; it is an intentionally unstructured text box and does not create Song relationships. The Texts view shows Text, Description, the first line of Scripture Reference, Tags, Times Used, Last Used, Notes, and PDF count. Times Used counts Lehr Progress starts, whether the starting service is a Lehr or Gebet; continuation services do not increase the count. Last Used is the date on which a Lehr Progress most recently started, not the latest continuation date. The view can be sorted by Text, Tags, Times Used, or Last Used in either direction. After a new Text is created once with Save Text, leaving any Text editor field automatically saves the complete Text record and shows the result in the editor. Tag changes on an existing Text save immediately; a new Text stores its selected tags when Save Text creates it. A Text editor cannot close while a PDF upload is still running. A Text may be deleted only when no service of either type references it; the server enforces this rule and removes the unused Text's PDF attachments with it.
+
+### `tags`
+
+| Column | Type | Rules |
+|---|---|---|
+| `id` | text | primary key |
+| `name` | text | required Title Case display name |
+| `normalized_name` | text | required unique case-folded name |
+| `created_at` | text | required |
+| `updated_at` | text | required |
+
+### `text_tags`
+
+| Column | Type | Rules |
+|---|---|---|
+| `text_id` | text | required FK to `texts`; composite primary key |
+| `tag_id` | text | required FK to `tags`; composite primary key |
+| `created_at` | text | required |
+
+Tags belong to reusable Text records, never directly to services. The picker suggests existing tags, permits a new tag by typing it, prevents case-insensitive duplicates, and displays selections as removable badges. Manage Tags supports global rename, merge, and deliberate deletion. Unused tags remain available in management with a zero count until explicitly deleted. Deleting a tag removes only its Text links and never deletes sermons.
 
 ### `vorraden`
 
@@ -278,7 +297,9 @@ sermon-register/
 
 The Windows register should provide a fast table-like view with sorting, filters, keyboard-friendly editing, searchable reusable-record selectors, and an inline “add new” action. It should feel spreadsheet-like without behaving like an unvalidated spreadsheet.
 
-The iPhone interface should use a responsive list and focused edit form instead of squeezing all columns into a grid. Both interfaces use the same records, validation, and server operations. Below the existing 768-pixel breakpoint, the Register uses a compact two-line toolbar: Search and Add share the first line, and Service Type and Year share the second; the service count and page subtitle are hidden, while the fixed compact bottom navigation remains unchanged.
+The iPhone interface should use a responsive list and focused edit form instead of squeezing all columns into a grid. Both interfaces use the same records, validation, and server operations. Below the existing 768-pixel breakpoint, the Register uses a compact two-line toolbar: Search and Add share the first line, and Service Type, Year, and Tags share the second; the service count and page subtitle are hidden, while the fixed compact bottom navigation remains unchanged.
+
+The Texts page and main Register share the same selected sermon-tag filters. Multiple selected tags use match-all behavior and combine with the normal search query. The tag menu shows the six most-used tags first, followed by all used tags alphabetically, with each count representing unique Text records rather than service occurrences. Desktop filtering applies immediately. On iPhone, a compact Tags button opens a full-width selection panel and applies the draft selection deliberately. Selected filters remain while navigating between Register and Texts or opening editors, but a fresh visit starts unfiltered. Desktop Register rows show a linked Text's tag badges beneath its Description; compact iPhone service rows omit badges to preserve their density.
 
 Each iPhone service is a flat AdminLTE list-group row inside the outlined Register card. The row shows `Sun · Aug 16, 2026` and a title-case Lehr or Gebet badge, a one-line linked Text name, up to two lines of linked Text Description, and a final one-line `CCW · ♪ Song Title` summary. Long preacher and Song values share the width and truncate only when necessary. Missing Description, preacher, or Song values consume no space. Vorrade, Notes, and Lehr completion Status are intentionally omitted from this first compact-list design and remain available in the Service editor. Text plus Description form one reliable Text-record tap target, Song remains a separate Song-record tap target, and the rest of the row opens the Service editor. Rows use compact spacing, thin dividers, and subtle press feedback; the toolbar scrolls normally rather than staying fixed. The desktop spreadsheet view is otherwise unchanged.
 

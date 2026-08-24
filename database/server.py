@@ -3,6 +3,7 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -248,17 +249,20 @@ def ensure_schema(connection, database_path=DB_PATH):
         connection.execute("PRAGMA user_version = 6")
         connection.commit()
 
-    text_columns = {
-        row["name"] for row in connection.execute("PRAGMA table_info(texts)")
-    }
-    if "tags" not in text_columns:
-        if not backup_path:
-            backup_path = schema_backup(database_path, connection)
-        connection.execute("ALTER TABLE texts ADD COLUMN tags TEXT")
-        connection.execute("PRAGMA user_version = 7")
-        connection.commit()
-
     connection.executescript(schema_sql)
+    if not metadata_value(connection, "text_tags_migration_v1"):
+        text_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(texts)")
+        }
+        has_legacy_tags = (
+            "tags" in text_columns
+            and connection.execute(
+                "SELECT 1 FROM texts WHERE NULLIF(TRIM(tags), '') IS NOT NULL LIMIT 1"
+            ).fetchone()
+        )
+        if has_legacy_tags and not backup_path:
+            backup_path = schema_backup(database_path, connection)
+        migrate_legacy_text_tags(connection)
     violations = connection.execute("PRAGMA foreign_key_check").fetchall()
     if violations:
         raise RuntimeError(f"Schema migration created foreign key errors: {violations}")
@@ -320,6 +324,123 @@ def normalize_tags(value):
     return ", ".join(tags) or None
 
 
+def normalize_tag_name(value):
+    """Return one stable Title Case display name for a sermon tag."""
+    cleaned = " ".join(str(value or "").strip().split()).lower()
+    return re.sub(
+        r"(^|[\s-])([^\s-])",
+        lambda match: match.group(1) + match.group(2).upper(),
+        cleaned,
+    )
+
+
+def tag_names(value):
+    raw_values = value if isinstance(value, list) else str(value or "").split(",")
+    names = []
+    seen = set()
+    for raw_value in raw_values:
+        raw_name = raw_value.get("name", "") if isinstance(raw_value, dict) else raw_value
+        name = normalize_tag_name(raw_name)
+        key = name.casefold()
+        if name and key not in seen:
+            names.append(name)
+            seen.add(key)
+    return names
+
+
+def tag_id_for_name(con, name):
+    display_name = normalize_tag_name(name)
+    if not display_name:
+        raise ValueError("Tag name is required")
+    normalized_name = display_name.casefold()
+    row = con.execute(
+        "SELECT id FROM tags WHERE normalized_name = ?", (normalized_name,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    tag_id = str(uuid.uuid4())
+    stamp = now()
+    con.execute(
+        """INSERT INTO tags
+           (id, name, normalized_name, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (tag_id, display_name, normalized_name, stamp, stamp),
+    )
+    return tag_id
+
+
+def sync_text_tags(con, text_id, value):
+    names = tag_names(value)
+    desired_ids = [tag_id_for_name(con, name) for name in names]
+    con.execute("DELETE FROM text_tags WHERE text_id = ?", (text_id,))
+    stamp = now()
+    for tag_id in desired_ids:
+        con.execute(
+            """INSERT INTO text_tags(text_id, tag_id, created_at)
+               VALUES (?, ?, ?)""",
+            (text_id, tag_id, stamp),
+        )
+    # Keep the legacy column synchronized on upgraded databases. It is not the
+    # source of truth and new code always reads through text_tags.
+    text_columns = {
+        row["name"] for row in con.execute("PRAGMA table_info(texts)")
+    }
+    if "tags" in text_columns:
+        con.execute(
+            "UPDATE texts SET tags = ? WHERE id = ?",
+            (", ".join(names) or None, text_id),
+        )
+
+
+def migrate_legacy_text_tags(con):
+    text_columns = {
+        row["name"] for row in con.execute("PRAGMA table_info(texts)")
+    }
+    if "tags" in text_columns:
+        for row in con.execute(
+            "SELECT id, tags FROM texts WHERE NULLIF(TRIM(tags), '') IS NOT NULL"
+        ).fetchall():
+            stamp = now()
+            for name in tag_names(row["tags"]):
+                tag_id = tag_id_for_name(con, name)
+                con.execute(
+                    """INSERT OR IGNORE INTO text_tags(text_id, tag_id, created_at)
+                       VALUES (?, ?, ?)""",
+                    (row["id"], tag_id, stamp),
+                )
+    set_metadata(con, "text_tags_migration_v1", now())
+    con.execute("PRAGMA user_version = 9")
+    con.commit()
+
+
+def tag_rows(con):
+    return [
+        dict(row)
+        for row in con.execute(
+            """SELECT tags.id, tags.name,
+                      COUNT(text_tags.text_id) AS sermon_count
+                 FROM tags
+            LEFT JOIN text_tags ON text_tags.tag_id = tags.id
+             GROUP BY tags.id, tags.name
+             ORDER BY tags.name COLLATE NOCASE"""
+        )
+    ]
+
+
+def tag_records_by_text(con):
+    records = {}
+    for row in con.execute(
+        """SELECT text_tags.text_id, tags.id, tags.name
+             FROM text_tags
+             JOIN tags ON tags.id = text_tags.tag_id
+            ORDER BY tags.name COLLATE NOCASE"""
+    ):
+        records.setdefault(row["text_id"], []).append(
+            {"id": row["id"], "name": row["name"]}
+        )
+    return records
+
+
 def song_rows(con):
     sql = """
     SELECT songs.id, songs.title, songs.tags, songs.notes,
@@ -335,7 +456,7 @@ def song_rows(con):
 
 def text_rows(con):
     sql = """
-    SELECT texts.id, texts.text, texts.description, texts.tags,
+    SELECT texts.id, texts.text, texts.description,
            texts.scripture_reference, texts.songs_for_text, texts.notes,
            (SELECT COUNT(*)
               FROM lehr_progress progress
@@ -354,7 +475,12 @@ def text_rows(con):
       FROM texts
   ORDER BY texts.text COLLATE NOCASE
     """
-    return [dict(row) for row in con.execute(sql)]
+    records_by_text = tag_records_by_text(con)
+    rows = [dict(row) for row in con.execute(sql)]
+    for row in rows:
+        row["tag_records"] = records_by_text.get(row["id"], [])
+        row["tags"] = ", ".join(tag["name"] for tag in row["tag_records"])
+    return rows
 
 
 def people_rows(con):
@@ -1098,6 +1224,7 @@ def service_rows(con):
            COALESCE(progress.status, s.lehr_status) AS lehr_status,
            COALESCE(songs.title, '') AS song,
            COALESCE(song_person.name, '') AS song_by,
+           texts.id AS text_id,
            texts.text AS text_title,
            COALESCE(text_person.name, '') AS text_by,
            vorraden.title AS vorrade,
@@ -1126,6 +1253,7 @@ def service_rows(con):
   ORDER BY s.service_date DESC, s.created_at DESC
     """
     rows = [dict(row) for row in con.execute(sql)]
+    tags_by_text = tag_records_by_text(con)
     history_by_progress = {}
     for history_row in con.execute(
         """SELECT member.progress_id, member.service_id, member.role_visible,
@@ -1156,6 +1284,10 @@ def service_rows(con):
             }
         )
     for row in rows:
+        row["text_tag_records"] = tags_by_text.get(row["text_id"], [])
+        row["text_tags"] = ", ".join(
+            tag["name"] for tag in row["text_tag_records"]
+        )
         row["status_label"] = progress_role_label(row)
         row["linked_lehr_status"] = (
             "FINISHED"
@@ -1197,6 +1329,122 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         length = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def create_tag(self):
+        try:
+            body = self.body()
+            name = normalize_tag_name(body.get("name"))
+            if not name:
+                return self.json({"error": "Tag Name is required"}, 400)
+            with connect() as con:
+                existing = con.execute(
+                    "SELECT id FROM tags WHERE normalized_name = ?",
+                    (name.casefold(),),
+                ).fetchone()
+                if existing:
+                    record = next(
+                        row for row in tag_rows(con) if row["id"] == existing["id"]
+                    )
+                    return self.json(record)
+                tag_id = tag_id_for_name(con, name)
+                con.commit()
+                record = next(row for row in tag_rows(con) if row["id"] == tag_id)
+                return self.json(record, 201)
+        except Exception as exc:
+            return self.json({"error": str(exc)}, 500)
+
+    def update_tag(self):
+        try:
+            body = self.body()
+            action = str(body.get("action", "rename")).strip().lower()
+            tag_id = str(body.get("id", "")).strip()
+            if not tag_id:
+                return self.json({"error": "Tag is required"}, 400)
+            with connect() as con:
+                tag = con.execute(
+                    "SELECT id, name FROM tags WHERE id = ?", (tag_id,)
+                ).fetchone()
+                if not tag:
+                    return self.json({"error": "Tag not found"}, 404)
+                if action == "merge":
+                    target_id = str(body.get("targetId", "")).strip()
+                    if not target_id or target_id == tag_id:
+                        return self.json({"error": "Choose a different target Tag"}, 400)
+                    target = con.execute(
+                        "SELECT id FROM tags WHERE id = ?", (target_id,)
+                    ).fetchone()
+                    if not target:
+                        return self.json({"error": "Target Tag not found"}, 404)
+                    con.execute(
+                        """INSERT OR IGNORE INTO text_tags(text_id, tag_id, created_at)
+                           SELECT text_id, ?, created_at
+                             FROM text_tags
+                            WHERE tag_id = ?""",
+                        (target_id, tag_id),
+                    )
+                    con.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+                    con.commit()
+                    return self.json(
+                        {
+                            "mergedId": tag_id,
+                            "target": next(
+                                row for row in tag_rows(con) if row["id"] == target_id
+                            ),
+                        }
+                    )
+                if action != "rename":
+                    return self.json({"error": "Invalid Tag action"}, 400)
+                name = normalize_tag_name(body.get("name"))
+                if not name:
+                    return self.json({"error": "Tag Name is required"}, 400)
+                duplicate = con.execute(
+                    """SELECT id FROM tags
+                        WHERE normalized_name = ? AND id <> ?""",
+                    (name.casefold(), tag_id),
+                ).fetchone()
+                if duplicate:
+                    return self.json(
+                        {"error": "This Tag already exists. Use Merge instead."}, 409
+                    )
+                con.execute(
+                    """UPDATE tags
+                          SET name = ?, normalized_name = ?, updated_at = ?
+                        WHERE id = ?""",
+                    (name, name.casefold(), now(), tag_id),
+                )
+                con.commit()
+                return self.json(next(row for row in tag_rows(con) if row["id"] == tag_id))
+        except Exception as exc:
+            return self.json({"error": str(exc)}, 500)
+
+    def delete_tag(self):
+        try:
+            body = self.body()
+            tag_id = str(body.get("id", "")).strip()
+            if not tag_id:
+                return self.json({"error": "Tag is required"}, 400)
+            with connect() as con:
+                tag = con.execute(
+                    """SELECT tags.id, tags.name, COUNT(text_tags.text_id) AS sermon_count
+                         FROM tags
+                    LEFT JOIN text_tags ON text_tags.tag_id = tags.id
+                        WHERE tags.id = ?
+                     GROUP BY tags.id, tags.name""",
+                    (tag_id,),
+                ).fetchone()
+                if not tag:
+                    return self.json({"error": "Tag not found"}, 404)
+                con.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+                con.commit()
+                return self.json(
+                    {
+                        "id": tag_id,
+                        "name": tag["name"],
+                        "sermonCount": tag["sermon_count"],
+                    }
+                )
+        except Exception as exc:
+            return self.json({"error": str(exc)}, 500)
 
     def create_song(self):
         try:
@@ -1285,14 +1533,13 @@ class Handler(BaseHTTPRequestHandler):
                 stamp = now()
                 con.execute(
                     """INSERT INTO texts
-                       (id, text, description, tags, scripture_reference,
+                       (id, text, description, scripture_reference,
                         songs_for_text, notes, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         text_id,
                         text,
                         str(body.get("description") or "").strip() or None,
-                        normalize_tags(body.get("tags")),
                         str(body.get("scriptureReference") or "").strip() or None,
                         str(body.get("songsForText") or "").strip() or None,
                         str(body.get("notes") or "").strip() or None,
@@ -1300,6 +1547,7 @@ class Handler(BaseHTTPRequestHandler):
                         stamp,
                     ),
                 )
+                sync_text_tags(con, text_id, body.get("tags", []))
                 con.commit()
                 record = next(row for row in text_rows(con) if row["id"] == text_id)
                 self.json(record, 201)
@@ -1328,14 +1576,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "This Text already exists"}, 409)
                 con.execute(
                     """UPDATE texts
-                          SET text = ?, description = ?, tags = ?,
+                          SET text = ?, description = ?,
                               scripture_reference = ?, songs_for_text = ?, notes = ?,
                               updated_at = ?
                         WHERE id = ?""",
                     (
                         text,
                         str(body.get("description") or "").strip() or None,
-                        normalize_tags(body.get("tags")),
                         str(body.get("scriptureReference") or "").strip() or None,
                         str(body.get("songsForText") or "").strip() or None,
                         str(body.get("notes") or "").strip() or None,
@@ -1343,6 +1590,7 @@ class Handler(BaseHTTPRequestHandler):
                         text_id,
                     ),
                 )
+                sync_text_tags(con, text_id, body.get("tags", []))
                 con.commit()
                 record = next(row for row in text_rows(con) if row["id"] == text_id)
                 self.json(record)
@@ -1450,6 +1698,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/texts":
             with connect() as con:
                 return self.json(text_rows(con))
+        if path == "/tags":
+            with connect() as con:
+                return self.json(tag_rows(con))
         if path == "/people":
             with connect() as con:
                 return self.json(people_rows(con))
@@ -1494,6 +1745,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.create_song()
         if path == "/texts":
             return self.create_text()
+        if path == "/tags":
+            return self.create_tag()
         if path == "/text-attachments":
             return self.create_text_attachment()
         if path != "/services":
@@ -1591,6 +1844,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.update_song()
         if path == "/texts":
             return self.update_text()
+        if path == "/tags":
+            return self.update_tag()
         if path != "/services":
             return self.json({"error": "Not found"}, 404)
         try:
@@ -1706,6 +1961,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if path == "/tags":
+            return self.delete_tag()
         if path == "/texts":
             try:
                 body = self.body()

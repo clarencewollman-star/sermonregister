@@ -23,6 +23,8 @@ type Service = {
   song: string;
   songBy: string;
   text: string;
+  textTags: TagRecord[];
+  textTagIds: string[];
   textBy: string;
   vorrade: string;
   vorradeBy: string;
@@ -53,6 +55,8 @@ type ApiService = {
   song: string | null;
   song_by: string | null;
   text_title: string;
+  text_tag_records: ApiTagRecord[];
+  text_tags: string;
   text_by: string | null;
   vorrade: string | null;
   vorrade_by: string | null;
@@ -114,6 +118,8 @@ type TextRecord = {
   text: string;
   description: string;
   tags: string;
+  tagRecords: TagRecord[];
+  tagIds: string[];
   scriptureReference: string;
   songsForText: string;
   notes: string;
@@ -129,6 +135,7 @@ type ApiTextRecord = {
   text: string;
   description: string | null;
   tags: string | null;
+  tag_records: ApiTagRecord[];
   scripture_reference: string | null;
   songs_for_text: string | null;
   notes: string | null;
@@ -136,6 +143,18 @@ type ApiTextRecord = {
   service_count: number;
   last_used: string | null;
   attachment_count: number;
+};
+
+type TagRecord = {
+  id: string;
+  name: string;
+  sermonCount: number;
+};
+
+type ApiTagRecord = {
+  id: string;
+  name: string;
+  sermon_count?: number;
 };
 
 type TextAttachment = {
@@ -185,6 +204,13 @@ const peopleApiUrl = () => "/api/people";
 const textsApiUrl = () => "/api/texts";
 const textAttachmentsApiUrl = () => "/api/text-attachments";
 const progressMatchApiUrl = () => "/api/progress-match";
+const tagsApiUrl = () => "/api/tags";
+
+const tagFromApi = (row: ApiTagRecord): TagRecord => ({
+  id: row.id,
+  name: row.name,
+  sermonCount: Number(row.sermon_count || 0),
+});
 
 const fromApi = (row: ApiService): Service => {
   const date = new Date(`${row.service_date}T12:00:00`);
@@ -209,6 +235,8 @@ const fromApi = (row: ApiService): Service => {
     song: row.song || "",
     songBy: row.song_by || "",
     text: row.text_title,
+    textTags: (row.text_tag_records || []).map(tagFromApi),
+    textTagIds: (row.text_tag_records || []).map((tag) => tag.id),
     textBy: row.text_by || "",
     vorrade: row.vorrade || "",
     vorradeBy: row.vorrade_by || "",
@@ -268,6 +296,8 @@ const textFromApi = (row: ApiTextRecord): TextRecord => ({
   text: row.text,
   description: row.description || "",
   tags: row.tags || "",
+  tagRecords: (row.tag_records || []).map(tagFromApi),
+  tagIds: (row.tag_records || []).map((tag) => tag.id),
   scriptureReference: row.scripture_reference || "",
   songsForText: row.songs_for_text || "",
   notes: row.notes || "",
@@ -351,6 +381,328 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
   return window.btoa(binary);
 }
 
+function titleCaseTag(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .split(/([\s-]+)/)
+    .filter(Boolean)
+    .map((part) =>
+      /^[\s-]+$/.test(part)
+        ? part.replace(/\s+/g, " ")
+        : `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`,
+    )
+    .join("");
+}
+
+function TagPicker({
+  tags,
+  selected,
+  onChange,
+}: {
+  tags: TagRecord[];
+  selected: TagRecord[];
+  onChange: (next: TagRecord[]) => void;
+}) {
+  const [value, setValue] = useState("");
+  const [focused, setFocused] = useState(false);
+  const selectedNames = new Set(selected.map((tag) => tag.name.toLowerCase()));
+  const suggestions = tags
+    .filter(
+      (tag) =>
+        !selectedNames.has(tag.name.toLowerCase()) &&
+        (!value || tag.name.toLowerCase().includes(value.toLowerCase())),
+    )
+    .sort(
+      (left, right) =>
+        right.sermonCount - left.sermonCount || left.name.localeCompare(right.name),
+    )
+    .slice(0, 8);
+
+  function addTag(tag: TagRecord) {
+    if (selectedNames.has(tag.name.toLowerCase())) return;
+    onChange([...selected, tag]);
+    setValue("");
+  }
+
+  function addTypedTag() {
+    const name = titleCaseTag(value.replace(/,$/, ""));
+    if (!name) return;
+    const existing = tags.find(
+      (tag) => tag.name.toLowerCase() === name.toLowerCase(),
+    );
+    addTag(
+      existing || {
+        id: `new:${name.toLowerCase()}`,
+        name,
+        sermonCount: 0,
+      },
+    );
+  }
+
+  return (
+    <div className="tag-picker">
+      <input
+        type="hidden"
+        name="textTags"
+        value={selected.map((tag) => tag.name).join(", ")}
+      />
+      <div className="tag-picker-control form-control d-flex flex-wrap gap-2 align-items-center">
+        {selected.map((tag) => (
+          <span className="badge text-bg-primary-subtle border tag-picker-badge" key={tag.id}>
+            {tag.name}
+            <button
+              type="button"
+              className="btn-close ms-2"
+              aria-label={`Remove ${tag.name}`}
+              onClick={() => onChange(selected.filter((item) => item.id !== tag.id))}
+            />
+          </span>
+        ))}
+        <input
+          id="text-tags-picker"
+          className="tag-picker-input"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => window.setTimeout(() => setFocused(false), 150)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === ",") {
+              event.preventDefault();
+              addTypedTag();
+            }
+          }}
+          placeholder={selected.length ? "Add Another Tag" : "Search Or Type A New Tag"}
+          aria-label="Add Tags"
+        />
+      </div>
+      {focused && (suggestions.length > 0 || value.trim()) && (
+        <div className="list-group tag-picker-suggestions shadow-sm">
+          {suggestions.map((tag) => (
+            <button
+              className="list-group-item list-group-item-action d-flex justify-content-between"
+              type="button"
+              key={tag.id}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => addTag(tag)}
+            >
+              <span>{tag.name}</span>
+              <span className="badge text-bg-light border">{tag.sermonCount}</span>
+            </button>
+          ))}
+          {value.trim() &&
+            !tags.some(
+              (tag) => tag.name.toLowerCase() === titleCaseTag(value).toLowerCase(),
+            ) && (
+              <button
+                className="list-group-item list-group-item-action text-primary"
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={addTypedTag}
+              >
+                <i className="bi bi-plus-lg me-2" />
+                Add “{titleCaseTag(value)}”
+              </button>
+            )}
+        </div>
+      )}
+      <div className="form-text">Choose Existing Tags Or Type A New Tag And Press Enter.</div>
+    </div>
+  );
+}
+
+function TagFilter({
+  tags,
+  selectedIds,
+  onChange,
+  mobile,
+  onManage,
+}: {
+  tags: TagRecord[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  mobile: boolean;
+  onManage?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [draftIds, setDraftIds] = useState<string[]>(selectedIds);
+  const usedTags = tags.filter((tag) => tag.sermonCount > 0);
+  const activeIds = mobile ? draftIds : selectedIds;
+  const mostUsed = [...usedTags]
+    .sort(
+      (left, right) =>
+        right.sermonCount - left.sermonCount || left.name.localeCompare(right.name),
+    )
+    .slice(0, 6);
+  const alphabetical = [...usedTags].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  const matches = alphabetical.filter((tag) =>
+    tag.name.toLowerCase().includes(query.toLowerCase()),
+  );
+
+  function toggle(tagId: string) {
+    const next = activeIds.includes(tagId)
+      ? activeIds.filter((id) => id !== tagId)
+      : [...activeIds, tagId];
+    if (mobile) setDraftIds(next);
+    else onChange(next);
+  }
+
+  function openFilter() {
+    setDraftIds(selectedIds);
+    setQuery("");
+    setOpen(true);
+  }
+
+  function tagOption(tag: TagRecord) {
+    return (
+      <label className="tag-filter-option" key={tag.id}>
+        <input
+          className="form-check-input"
+          type="checkbox"
+          checked={activeIds.includes(tag.id)}
+          onChange={() => toggle(tag.id)}
+        />
+        <span className="flex-grow-1">{tag.name}</span>
+        <span className="badge text-bg-light border">{tag.sermonCount}</span>
+      </label>
+    );
+  }
+
+  return (
+    <div className={`tag-filter ${open ? "is-open" : ""}`}>
+      <button
+        className={`btn ${selectedIds.length ? "btn-primary" : "btn-outline-secondary"}`}
+        type="button"
+        aria-expanded={open}
+        onClick={() => (open ? setOpen(false) : openFilter())}
+      >
+        <i className="bi bi-tags me-1" />
+        Tags{selectedIds.length ? ` (${selectedIds.length})` : ""}
+      </button>
+      {open && (
+        <div className={`tag-filter-panel card shadow ${mobile ? "mobile" : ""}`}>
+          <div className="card-header d-flex align-items-center justify-content-between">
+            <strong>Filter By Tags</strong>
+            <button
+              className="btn-close"
+              type="button"
+              aria-label="Close Tag Filter"
+              onClick={() => setOpen(false)}
+            />
+          </div>
+          <div className="card-body">
+            <div className="input-group mb-3">
+              <span className="input-group-text"><i className="bi bi-search" /></span>
+              <input
+                className="form-control"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search Tags"
+                aria-label="Search Tags"
+              />
+            </div>
+            {query ? (
+              <div className="tag-filter-list">
+                {matches.map(tagOption)}
+                {!matches.length && (
+                  <div className="text-body-secondary py-2">No Tags Match Your Search.</div>
+                )}
+              </div>
+            ) : (
+              <>
+                {!!mostUsed.length && (
+                  <>
+                    <small className="text-uppercase text-body-secondary fw-semibold">Most Used</small>
+                    <div className="tag-filter-list mb-3">{mostUsed.map(tagOption)}</div>
+                  </>
+                )}
+                <small className="text-uppercase text-body-secondary fw-semibold">All Tags</small>
+                <div className="tag-filter-list">{alphabetical.map(tagOption)}</div>
+              </>
+            )}
+          </div>
+          <div className="card-footer d-flex flex-wrap justify-content-between gap-2">
+            <div>
+              {onManage && (
+                <button
+                  className="btn btn-link px-0"
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onManage();
+                  }}
+                >
+                  Manage Tags
+                </button>
+              )}
+            </div>
+            <div className="d-flex gap-2">
+              <button
+                className="btn btn-outline-secondary"
+                type="button"
+                onClick={() => {
+                  if (mobile) setDraftIds([]);
+                  else onChange([]);
+                }}
+              >
+                Clear
+              </button>
+              {mobile && (
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  onClick={() => {
+                    onChange(draftIds);
+                    setOpen(false);
+                  }}
+                >
+                  Apply
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SelectedTagChips({
+  tags,
+  selectedIds,
+  onChange,
+}: {
+  tags: TagRecord[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  if (!selectedIds.length) return null;
+  return (
+    <div className="selected-tag-chips d-flex flex-wrap align-items-center gap-2">
+      <span className="text-body-secondary small">Matching All:</span>
+      {selectedIds.map((id) => {
+        const tag = tags.find((item) => item.id === id);
+        return tag ? (
+          <button
+            className="badge text-bg-primary border-0"
+            type="button"
+            key={id}
+            onClick={() => onChange(selectedIds.filter((tagId) => tagId !== id))}
+          >
+            {tag.name} <i className="bi bi-x-lg ms-1" />
+          </button>
+        ) : null;
+      })}
+      <button className="btn btn-link btn-sm p-0" type="button" onClick={() => onChange([])}>
+        Clear Tags
+      </button>
+    </div>
+  );
+}
+
 export default function Home() {
   const [active, setActive] = useState("Register");
   const [items, setItems] = useState<Service[]>([]);
@@ -389,10 +741,13 @@ export default function Home() {
   const songFormRef = useRef<HTMLFormElement>(null);
   const [people, setPeople] = useState<Person[]>([]);
   const [texts, setTexts] = useState<TextRecord[]>([]);
+  const [tags, setTags] = useState<TagRecord[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [textQuery, setTextQuery] = useState("");
   const [textSort, setTextSort] = useState<TextSortField>("text");
   const [textSortDirection, setTextSortDirection] = useState<"asc" | "desc">("asc");
   const [textEditor, setTextEditor] = useState<TextRecord | "new" | null>(null);
+  const [textEditorTags, setTextEditorTags] = useState<TagRecord[]>([]);
   const [textError, setTextError] = useState("");
   const [textAutoSaveStatus, setTextAutoSaveStatus] = useState("");
   const textAutoSaveQueue = useRef<Promise<void>>(Promise.resolve());
@@ -400,6 +755,13 @@ export default function Home() {
   const textFormRef = useRef<HTMLFormElement>(null);
   const [textAttachments, setTextAttachments] = useState<TextAttachment[]>([]);
   const [pdfUploading, setPdfUploading] = useState(false);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [tagManagerQuery, setTagManagerQuery] = useState("");
+  const [tagManagerError, setTagManagerError] = useState("");
+  const [tagRenameId, setTagRenameId] = useState("");
+  const [tagRenameValue, setTagRenameValue] = useState("");
+  const [tagMergeId, setTagMergeId] = useState("");
+  const [tagMergeTargetId, setTagMergeTargetId] = useState("");
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 767px)");
@@ -499,6 +861,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    fetch(tagsApiUrl())
+      .then((response) => {
+        if (!response.ok) throw new Error("Tags unavailable");
+        return response.json();
+      })
+      .then((rows) => setTags((rows as ApiTagRecord[]).map(tagFromApi)))
+      .catch(() => setTextError("The Tags Could Not Be Loaded."));
+  }, []);
+
+  useEffect(() => {
     fetch(songsApiUrl())
       .then((response) => {
         if (!response.ok) throw new Error("Songs unavailable");
@@ -557,12 +929,14 @@ export default function Home() {
               service.progressStartId === service.id &&
               service.progressStatus === "Completed")) &&
           (year === "All Years" || service.dateValue.startsWith(`${year}-`)) &&
-          Object.values(service)
-            .join(" ")
+          selectedTagIds.every((tagId) => service.textTagIds.includes(tagId)) &&
+          `${Object.values(service).join(" ")} ${service.textTags
+            .map((tag) => tag.name)
+            .join(" ")}`
             .toLowerCase()
             .includes(query.toLowerCase()),
       ),
-    [items, query, filter, year],
+    [items, query, filter, year, selectedTagIds],
   );
 
   const years = useMemo(
@@ -600,10 +974,12 @@ export default function Home() {
 
   const visibleTexts = useMemo(
     () => {
-      const filteredTexts = texts.filter((record) =>
-        `${record.text} ${record.description} ${record.tags} ${record.scriptureReference} ${record.songsForText} ${record.notes}`
-          .toLowerCase()
-          .includes(textQuery.toLowerCase()),
+      const filteredTexts = texts.filter(
+        (record) =>
+          selectedTagIds.every((tagId) => record.tagIds.includes(tagId)) &&
+          `${record.text} ${record.description} ${record.tags} ${record.scriptureReference} ${record.songsForText} ${record.notes}`
+            .toLowerCase()
+            .includes(textQuery.toLowerCase()),
       );
       return filteredTexts.sort((left, right) => {
         if (textSort === "tags" && (!left.tags || !right.tags)) {
@@ -627,7 +1003,17 @@ export default function Home() {
         return textSortDirection === "asc" ? comparison : -comparison;
       });
     },
-    [texts, textQuery, textSort, textSortDirection],
+    [texts, textQuery, textSort, textSortDirection, selectedTagIds],
+  );
+
+  const managedTags = useMemo(
+    () =>
+      [...tags]
+        .filter((tag) =>
+          tag.name.toLowerCase().includes(tagManagerQuery.toLowerCase()),
+        )
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [tags, tagManagerQuery],
   );
 
   const songChoices = useMemo(
@@ -688,6 +1074,12 @@ export default function Home() {
     if (!response.ok) throw new Error("Could Not Refresh Texts");
     const rows = (await response.json()) as ApiTextRecord[];
     setTexts(rows.map(textFromApi));
+  }
+
+  async function refreshTags() {
+    const response = await fetch(tagsApiUrl(), { cache: "no-store" });
+    if (!response.ok) throw new Error("Could Not Refresh Tags");
+    setTags(((await response.json()) as ApiTagRecord[]).map(tagFromApi));
   }
 
   async function refreshPeople() {
@@ -797,12 +1189,15 @@ export default function Home() {
     };
   }
 
-  function textPayload(formElement: HTMLFormElement) {
+  function textPayload(
+    formElement: HTMLFormElement,
+    tagSelection: TagRecord[] = textEditorTags,
+  ) {
     const form = new FormData(formElement);
     return {
       text: String(form.get("textText") || "").trim(),
       description: String(form.get("textDescription") || ""),
-      tags: String(form.get("textTags") || ""),
+      tags: tagSelection.map((tag) => tag.name),
       scriptureReference: String(form.get("textScriptureReference") || ""),
       songsForText: String(form.get("textSongsForText") || ""),
       notes: String(form.get("textNotes") || ""),
@@ -946,6 +1341,7 @@ export default function Home() {
     setTextAutoSaveStatus("");
     textAutoSaveFailed.current = false;
     setTextAttachments([]);
+    setTextEditorTags(record.tagRecords);
     setTextEditor(record);
     void loadTextAttachments(record.id).catch((error) =>
       setTextError(error instanceof Error ? error.message : "Could Not Load PDFs"),
@@ -976,6 +1372,7 @@ export default function Home() {
         const result = (await response.json()) as ApiTextRecord & { error?: string };
         if (!response.ok) throw new Error(result.error || "Could Not Save Text");
         const saved = textFromApi(result);
+        setTextEditorTags(saved.tagRecords);
         setTexts((current) =>
           current
             .map((record) => (record.id === saved.id ? saved : record))
@@ -985,6 +1382,45 @@ export default function Home() {
       } catch (error) {
         textAutoSaveFailed.current = true;
         setTextError(error instanceof Error ? error.message : "Could Not Save Text");
+        setTextAutoSaveStatus("Automatic Save Failed");
+      }
+    });
+  }
+
+  function changeTextEditorTags(next: TagRecord[]) {
+    const previous = textEditorTags;
+    setTextEditorTags(next);
+    if (!textEditor || textEditor === "new" || !textFormRef.current) return;
+    const textId = textEditor.id;
+    const payload = textPayload(textFormRef.current, next);
+    textAutoSaveQueue.current = textAutoSaveQueue.current.then(async () => {
+      textAutoSaveFailed.current = false;
+      setTextAutoSaveStatus("Saving...");
+      setTextError("");
+      try {
+        const response = await fetch(textsApiUrl(), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: textId, ...payload }),
+        });
+        const result = (await response.json()) as ApiTextRecord & { error?: string };
+        if (!response.ok) throw new Error(result.error || "Could Not Save Tags");
+        const saved = textFromApi(result);
+        setTexts((current) =>
+          current
+            .map((record) => (record.id === saved.id ? saved : record))
+            .sort((left, right) => left.text.localeCompare(right.text)),
+        );
+        setTextEditorTags(saved.tagRecords);
+        setTextEditor((current) =>
+          current && current !== "new" && current.id === saved.id ? saved : current,
+        );
+        await Promise.all([refreshTags(), refreshServices()]);
+        setTextAutoSaveStatus("Saved Automatically");
+      } catch (error) {
+        setTextEditorTags(previous);
+        textAutoSaveFailed.current = true;
+        setTextError(error instanceof Error ? error.message : "Could Not Save Tags");
         setTextAutoSaveStatus("Automatic Save Failed");
       }
     });
@@ -1015,6 +1451,7 @@ export default function Home() {
       const result = (await response.json()) as ApiTextRecord & { error?: string };
       if (!response.ok) throw new Error(result.error || "Could Not Save Text");
       const saved = textFromApi(result);
+      setTextEditorTags(saved.tagRecords);
       setTexts((current) => {
         const next =
           currentEditor === "new"
@@ -1023,11 +1460,89 @@ export default function Home() {
         return next.sort((left, right) => left.text.localeCompare(right.text));
       });
       setTextEditor(saved);
+      await Promise.all([refreshTags(), refreshServices()]);
       setTextAutoSaveStatus("Saved");
     } catch (error) {
       textAutoSaveFailed.current = true;
       setTextError(error instanceof Error ? error.message : "Could Not Save Text");
       setTextAutoSaveStatus("Save Failed");
+    }
+  }
+
+  async function finishTagMutation() {
+    await Promise.all([refreshTags(), refreshTexts(), refreshServices()]);
+  }
+
+  async function renameTag(tagId: string) {
+    const name = titleCaseTag(tagRenameValue);
+    if (!name) {
+      setTagManagerError("Tag Name Is Required.");
+      return;
+    }
+    setTagManagerError("");
+    try {
+      const response = await fetch(tagsApiUrl(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rename", id: tagId, name }),
+      });
+      const result = (await response.json()) as ApiTagRecord & { error?: string };
+      if (!response.ok) throw new Error(result.error || "Could Not Rename Tag");
+      setTagRenameId("");
+      setTagRenameValue("");
+      await finishTagMutation();
+    } catch (error) {
+      setTagManagerError(error instanceof Error ? error.message : "Could Not Rename Tag");
+    }
+  }
+
+  async function mergeTag(tagId: string) {
+    if (!tagMergeTargetId || tagMergeTargetId === tagId) {
+      setTagManagerError("Choose A Different Tag To Merge Into.");
+      return;
+    }
+    const source = tags.find((tag) => tag.id === tagId);
+    const target = tags.find((tag) => tag.id === tagMergeTargetId);
+    if (!source || !target) return;
+    if (!window.confirm(`Merge ${source.name} Into ${target.name}?`)) return;
+    setTagManagerError("");
+    try {
+      const response = await fetch(tagsApiUrl(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "merge", id: tagId, targetId: target.id }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Could Not Merge Tags");
+      setSelectedTagIds((current) =>
+        Array.from(new Set(current.map((id) => (id === tagId ? target.id : id)))),
+      );
+      setTagMergeId("");
+      setTagMergeTargetId("");
+      await finishTagMutation();
+    } catch (error) {
+      setTagManagerError(error instanceof Error ? error.message : "Could Not Merge Tags");
+    }
+  }
+
+  async function deleteTag(tag: TagRecord) {
+    const message = tag.sermonCount
+      ? `Delete ${tag.name}? It Will Be Removed From ${tag.sermonCount} Sermon${tag.sermonCount === 1 ? "" : "s"}.`
+      : `Delete ${tag.name}?`;
+    if (!window.confirm(message)) return;
+    setTagManagerError("");
+    try {
+      const response = await fetch(tagsApiUrl(), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: tag.id }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Could Not Delete Tag");
+      setSelectedTagIds((current) => current.filter((id) => id !== tag.id));
+      await finishTagMutation();
+    } catch (error) {
+      setTagManagerError(error instanceof Error ? error.message : "Could Not Delete Tag");
     }
   }
 
@@ -1414,6 +1929,14 @@ export default function Home() {
                         />
                       </div>
                     </div>
+                    <div className="col-auto">
+                      <TagFilter
+                        tags={tags}
+                        selectedIds={selectedTagIds}
+                        onChange={setSelectedTagIds}
+                        mobile={false}
+                      />
+                    </div>
                     <div className="col-6 col-lg-auto">
                       <select
                         className="form-select"
@@ -1471,7 +1994,7 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="row g-2 mt-0">
-                      <div className="col-6">
+                      <div className="col-5">
                         <select
                           className="form-select"
                           value={filter}
@@ -1485,7 +2008,7 @@ export default function Home() {
                           <option>Completed Lehrs</option>
                         </select>
                       </div>
-                      <div className="col-6">
+                      <div className="col-4">
                         <select
                           className="form-select"
                           value={year}
@@ -1498,8 +2021,21 @@ export default function Home() {
                           ))}
                         </select>
                       </div>
+                      <div className="col-3">
+                        <TagFilter
+                          tags={tags}
+                          selectedIds={selectedTagIds}
+                          onChange={setSelectedTagIds}
+                          mobile
+                        />
+                      </div>
                     </div>
                   </div>
+                  <SelectedTagChips
+                    tags={tags}
+                    selectedIds={selectedTagIds}
+                    onChange={setSelectedTagIds}
+                  />
                 </div>
 
                 {saveError && (
@@ -1803,6 +2339,24 @@ export default function Home() {
                                 {textDescriptionsByTitle.get(service.text)}
                               </small>
                             )}
+                            {!!service.textTags.length && (
+                              <span className="d-flex flex-wrap gap-1 mt-2 service-text-tags">
+                                {service.textTags.map((tag) => (
+                                  <button
+                                    className="badge text-bg-light border tag-badge-button"
+                                    type="button"
+                                    key={tag.id}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedTagIds([tag.id]);
+                                    }}
+                                  >
+                                    {tag.name}
+                                  </button>
+                                ))}
+                              </span>
+                            )}
                           </td>
                           <td className="person-column">{service.textBy}</td>
                           <td className="vorrade-column">{service.vorrade}</td>
@@ -1920,6 +2474,19 @@ export default function Home() {
                         />
                       </div>
                     </div>
+                    <div className="col-auto">
+                      <TagFilter
+                        tags={tags}
+                        selectedIds={selectedTagIds}
+                        onChange={setSelectedTagIds}
+                        mobile={mobile}
+                        onManage={() => {
+                          setTagManagerError("");
+                          setTagManagerQuery("");
+                          setTagManagerOpen(true);
+                        }}
+                      />
+                    </div>
                     <div className="col-8 d-md-none">
                       <select
                         className="form-select"
@@ -1975,6 +2542,7 @@ export default function Home() {
                           setTextAutoSaveStatus("");
                           textAutoSaveFailed.current = false;
                           setTextAttachments([]);
+                          setTextEditorTags([]);
                           setTextEditor("new");
                         }}
                       >
@@ -1983,6 +2551,11 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
+                  <SelectedTagChips
+                    tags={tags}
+                    selectedIds={selectedTagIds}
+                    onChange={setSelectedTagIds}
+                  />
                 </div>
 
                 {textError && !textEditor && (
@@ -2135,14 +2708,25 @@ export default function Home() {
                                 .split(",")
                                 .map((tag) => tag.trim())
                                 .filter(Boolean)
-                                .map((tag) => (
-                                  <span
-                                    className="badge text-bg-light border"
-                                    key={tag}
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
+                                .map((tag) => {
+                                  const tagRecord = record.tagRecords.find(
+                                    (item) => item.name === tag,
+                                  );
+                                  return (
+                                    <button
+                                      className="badge text-bg-light border tag-badge-button"
+                                      type="button"
+                                      key={tag}
+                                      onKeyDown={(event) => event.stopPropagation()}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (tagRecord) setSelectedTagIds([tagRecord.id]);
+                                      }}
+                                    >
+                                      {tag}
+                                    </button>
+                                  );
+                                })}
                             </span>
                           </td>
                           <td className="text-center">{record.timesUsed}</td>
@@ -2166,11 +2750,16 @@ export default function Home() {
 
                 <div className="list-group list-group-flush mobile-text-list">
                   {visibleTexts.map((record) => (
-                    <button
-                      type="button"
+                    <div
+                      role="button"
+                      tabIndex={0}
                       className="list-group-item list-group-item-action p-3 text-start"
                       key={record.id}
                       onClick={() => openTextEditor(record)}
+                      onKeyDown={(event) =>
+                        (event.key === "Enter" || event.key === " ") &&
+                        openTextEditor(record)
+                      }
                     >
                       <strong className="d-block">{record.text}</strong>
                       {record.description && (
@@ -2189,14 +2778,25 @@ export default function Home() {
                             .split(",")
                             .map((tag) => tag.trim())
                             .filter(Boolean)
-                            .map((tag) => (
-                              <span
-                                className="badge text-bg-primary-subtle border"
-                                key={tag}
-                              >
-                                {tag}
-                              </span>
-                            ))}
+                            .map((tag) => {
+                              const tagRecord = record.tagRecords.find(
+                                (item) => item.name === tag,
+                              );
+                              return (
+                                <button
+                                  className="badge text-bg-primary-subtle border tag-badge-button"
+                                  type="button"
+                                  key={tag}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (tagRecord) setSelectedTagIds([tagRecord.id]);
+                                  }}
+                                >
+                                  {tag}
+                                </button>
+                              );
+                            })}
                         </span>
                       )}
                       <small className="d-block text-body-secondary mt-2">
@@ -2205,7 +2805,7 @@ export default function Home() {
                           ? ` · ${record.attachmentCount} PDFs`
                           : ""}
                       </small>
-                    </button>
+                    </div>
                   ))}
                 </div>
 
@@ -3298,6 +3898,182 @@ export default function Home() {
         </div>
       )}
 
+      {tagManagerOpen && (
+        <div
+          className="modal fade show d-block service-edit-modal tag-manager-modal"
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="tag-manager-title"
+        >
+          <div className="modal-dialog modal-fullscreen-md-down modal-xl">
+            <div className="modal-content card card-primary card-outline mb-0">
+              <div className="modal-header">
+                <div>
+                  <small className="text-uppercase text-body-secondary">Sermon Library</small>
+                  <h5 className="modal-title" id="tag-manager-title">Manage Tags</h5>
+                </div>
+                <button
+                  className="btn-close"
+                  type="button"
+                  aria-label="Close Tag Manager"
+                  onClick={() => setTagManagerOpen(false)}
+                />
+              </div>
+              <div className="modal-body">
+                {tagManagerError && (
+                  <div className="alert alert-danger" role="alert">
+                    <i className="bi bi-exclamation-triangle-fill me-2" />
+                    {tagManagerError}
+                  </div>
+                )}
+                <div className="input-group mb-3">
+                  <span className="input-group-text"><i className="bi bi-search" /></span>
+                  <input
+                    className="form-control"
+                    value={tagManagerQuery}
+                    onChange={(event) => setTagManagerQuery(event.target.value)}
+                    placeholder="Search Tags"
+                    aria-label="Search Managed Tags"
+                  />
+                </div>
+                <div className="table-responsive">
+                  <table className="table table-hover align-middle tag-manager-table">
+                    <thead className="table-light">
+                      <tr>
+                        <th>Tag</th>
+                        <th className="text-center">Sermons</th>
+                        <th className="text-end">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {managedTags.map((tag) => (
+                        <tr key={tag.id}>
+                          <td>
+                            {tagRenameId === tag.id ? (
+                              <div className="input-group">
+                                <input
+                                  className="form-control"
+                                  value={tagRenameValue}
+                                  onChange={(event) => setTagRenameValue(event.target.value)}
+                                  aria-label={`Rename ${tag.name}`}
+                                />
+                                <button
+                                  className="btn btn-primary"
+                                  type="button"
+                                  onClick={() => void renameTag(tag.id)}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  className="btn btn-outline-secondary"
+                                  type="button"
+                                  onClick={() => setTagRenameId("")}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : tagMergeId === tag.id ? (
+                              <div className="input-group">
+                                <span className="input-group-text">Merge Into</span>
+                                <select
+                                  className="form-select"
+                                  value={tagMergeTargetId}
+                                  onChange={(event) => setTagMergeTargetId(event.target.value)}
+                                  aria-label={`Merge ${tag.name} Into`}
+                                >
+                                  <option value="">Choose Tag</option>
+                                  {tags
+                                    .filter((target) => target.id !== tag.id)
+                                    .sort((left, right) => left.name.localeCompare(right.name))
+                                    .map((target) => (
+                                      <option value={target.id} key={target.id}>{target.name}</option>
+                                    ))}
+                                </select>
+                                <button
+                                  className="btn btn-primary"
+                                  type="button"
+                                  onClick={() => void mergeTag(tag.id)}
+                                >
+                                  Merge
+                                </button>
+                                <button
+                                  className="btn btn-outline-secondary"
+                                  type="button"
+                                  onClick={() => setTagMergeId("")}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="badge text-bg-primary-subtle border fs-6">{tag.name}</span>
+                            )}
+                          </td>
+                          <td className="text-center">{tag.sermonCount}</td>
+                          <td className="text-end">
+                            {tagRenameId !== tag.id && tagMergeId !== tag.id && (
+                              <div className="btn-group btn-group-sm">
+                                <button
+                                  className="btn btn-outline-primary"
+                                  type="button"
+                                  onClick={() => {
+                                    setTagMergeId("");
+                                    setTagRenameId(tag.id);
+                                    setTagRenameValue(tag.name);
+                                  }}
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  className="btn btn-outline-secondary"
+                                  type="button"
+                                  disabled={tags.length < 2}
+                                  onClick={() => {
+                                    setTagRenameId("");
+                                    setTagMergeId(tag.id);
+                                    setTagMergeTargetId("");
+                                  }}
+                                >
+                                  Merge
+                                </button>
+                                <button
+                                  className="btn btn-outline-danger"
+                                  type="button"
+                                  onClick={() => void deleteTag(tag)}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {!managedTags.length && (
+                  <div className="text-center text-body-secondary py-5">
+                    No Tags Match Your Search.
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <small className="text-body-secondary me-auto">
+                  Unused Tags Stay Here Until You Delete Them.
+                </small>
+                <button
+                  className="btn btn-outline-secondary"
+                  type="button"
+                  onClick={() => setTagManagerOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {textEditor && (
         <div
           className="modal fade show d-block service-edit-modal library-editor-modal"
@@ -3367,19 +4143,12 @@ export default function Home() {
                       />
                     </div>
                     <div className="col-12">
-                      <label className="form-label" htmlFor="text-tags">
-                        Tags
-                      </label>
-                      <input
-                        className="form-control"
-                        id="text-tags"
-                        name="textTags"
-                        defaultValue={textEditor === "new" ? "" : textEditor.tags}
-                        placeholder="Faith, Marriage, Christmas"
+                      <label className="form-label" htmlFor="text-tags-picker">Tags</label>
+                      <TagPicker
+                        tags={tags}
+                        selected={textEditorTags}
+                        onChange={changeTextEditorTags}
                       />
-                      <div className="form-text">
-                        Separate Multiple Tags With Commas.
-                      </div>
                     </div>
                     <div className="col-12 col-lg-6">
                       <label

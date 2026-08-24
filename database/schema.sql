@@ -15,12 +15,28 @@ CREATE TABLE IF NOT EXISTS texts (
   id TEXT PRIMARY KEY,
   text TEXT NOT NULL COLLATE NOCASE,
   description TEXT,
-  tags TEXT,
   scripture_reference TEXT,
   songs_for_text TEXT,
   notes TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- Sermon tags are reusable records linked to Texts. The legacy texts.tags
+-- column is retained on upgraded databases only long enough to migrate data.
+CREATE TABLE IF NOT EXISTS tags (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS text_tags (
+  text_id TEXT NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (text_id, tag_id)
 );
 
 CREATE TABLE IF NOT EXISTS vorraden (
@@ -187,6 +203,8 @@ CREATE INDEX IF NOT EXISTS services_vorrade_by_idx ON services(vorrade_by_person
 CREATE INDEX IF NOT EXISTS people_name_idx ON people(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS texts_text_idx ON texts(text COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS texts_scripture_idx ON texts(scripture_reference COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS tags_name_idx ON tags(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS text_tags_tag_idx ON text_tags(tag_id, text_id);
 CREATE INDEX IF NOT EXISTS vorraden_title_idx ON vorraden(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS songs_title_idx ON songs(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS service_attachments_owner_idx ON service_attachments(service_id);
@@ -198,4 +216,4 @@ CREATE INDEX IF NOT EXISTS lehr_progress_text_status_idx
 CREATE INDEX IF NOT EXISTS lehr_progress_services_progress_idx
   ON lehr_progress_services(progress_id, sequence_number);
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
