@@ -276,6 +276,7 @@ def initialize_database():
         ensure_schema(con, DB_PATH)
         seed_legacy_lehr_progress(con)
         run_one_time_status_cleanup(con, DB_PATH)
+        run_one_time_legacy_gebet_progress_cleanup(con, DB_PATH)
         con.commit()
 
 
@@ -825,6 +826,61 @@ def run_one_time_status_cleanup(con, database_path=DB_PATH):
     )
 
 
+def run_one_time_legacy_gebet_progress_cleanup(con, database_path=DB_PATH):
+    """Remove old, single-record Gebet progress created by the edit bug."""
+    if metadata_value(con, "legacy_gebet_progress_cleanup_v1"):
+        return
+    cutoff = con.execute("SELECT date('now', '-2 months')").fetchone()[0]
+    progress_rows = con.execute(
+        """SELECT progress.id, progress.start_service_id
+             FROM lehr_progress progress
+             JOIN services service ON service.id = progress.start_service_id
+            WHERE service.service_type = 'GEBET'
+              AND service.service_date < ?
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM lehr_progress_services member
+                     WHERE member.progress_id = progress.id
+                       AND member.service_id <> progress.start_service_id
+                  )""",
+        (cutoff,),
+    ).fetchall()
+    backup_path = None
+    if progress_rows:
+        con.commit()
+        try:
+            backup_path = status_cleanup_backup(database_path, con)
+        except Exception as exc:
+            print(
+                f"[database] Legacy Gebet progress cleanup skipped because backup failed: {exc}",
+                flush=True,
+            )
+            return
+        for progress in progress_rows:
+            con.execute(
+                "DELETE FROM lehr_progress_services WHERE progress_id = ?",
+                (progress["id"],),
+            )
+            con.execute("DELETE FROM lehr_progress WHERE id = ?", (progress["id"],))
+    set_metadata(
+        con,
+        "legacy_gebet_progress_cleanup_v1",
+        json.dumps(
+            {
+                "cutoff": cutoff,
+                "backup": str(backup_path) if backup_path else None,
+                "removedProgressRecords": len(progress_rows),
+            }
+        ),
+    )
+    con.commit()
+    print(
+        f"[database] One-time legacy Gebet cleanup removed "
+        f"{len(progress_rows)} accidental progress records.",
+        flush=True,
+    )
+
+
 def matching_progress(con, service_date, text_id, service_id=None):
     row = con.execute(
         """WITH activity AS (
@@ -1045,7 +1101,7 @@ def move_progress_member(con, service_id, target_progress_id, intent, stamp):
 
 def update_service_progress(con, service_id, service_type, service_date, text_id,
                             intent, status, completed, status_changed,
-                            relationship_changed, stamp):
+                            progress_changed, relationship_changed, stamp):
     membership = con.execute(
         """SELECT member.progress_id, member.intent,
                   progress.start_service_id, progress.status,
@@ -1056,7 +1112,7 @@ def update_service_progress(con, service_id, service_type, service_date, text_id
         (service_id,),
     ).fetchone()
     if not membership:
-        if not status_changed:
+        if not status_changed and not progress_changed:
             return None
         return assign_new_service_progress(
             con, service_id, service_type, service_date, text_id,
@@ -1065,6 +1121,15 @@ def update_service_progress(con, service_id, service_type, service_date, text_id
 
     progress_id = membership["progress_id"]
     is_start = membership["start_service_id"] == service_id
+    if not status_changed and not progress_changed:
+        if is_start and service_type == "LEHR" and relationship_changed:
+            con.execute(
+                """UPDATE lehr_progress
+                      SET text_id = ?, updated_at = ?
+                    WHERE id = ?""",
+                (text_id, stamp, progress_id),
+            )
+        return progress_id
     if (
         status_changed
         and not completed
@@ -1932,6 +1997,7 @@ class Handler(BaseHTTPRequestHandler):
                     lehr_status,
                     completed,
                     as_bool(body.get("statusChanged")),
+                    as_bool(body.get("progressChanged")),
                     (
                         existing["service_type"] != body["type"]
                         or existing["service_date"] != body["date"]

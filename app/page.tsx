@@ -824,6 +824,7 @@ export default function Home() {
   const [editProgressStatus, setEditProgressStatus] = useState("");
   const [editCompleted, setEditCompleted] = useState(false);
   const [editStatusChanged, setEditStatusChanged] = useState(false);
+  const [editProgressChanged, setEditProgressChanged] = useState(false);
   const [selected, setSelected] = useState<Service | null>(null);
   const [rowVersion, setRowVersion] = useState(0);
   const [saveError, setSaveError] = useState("");
@@ -1242,6 +1243,7 @@ export default function Home() {
           progressIntent: editKind === "Lehr" ? editProgressIntent : "AUTO",
           completed: editCompleted,
           statusChanged: editStatusChanged,
+          progressChanged: editProgressChanged,
           notes: String(form.get("editNotes") || ""),
         }),
       });
@@ -1876,6 +1878,7 @@ export default function Home() {
     );
     setEditCompleted(service.completionServiceId === service.id);
     setEditStatusChanged(false);
+    setEditProgressChanged(false);
     setSelected(service);
   }
 
@@ -3573,9 +3576,10 @@ export default function Home() {
                         id="edit-service-type"
                         name="editType"
                         value={editKind}
-                        onChange={(event) =>
-                          setEditKind(event.target.value as EntryType)
-                        }
+                        onChange={(event) => {
+                          setEditKind(event.target.value as EntryType);
+                          setEditProgressChanged(true);
+                        }}
                         required
                       >
                         <option>Lehr</option>
@@ -3656,7 +3660,7 @@ export default function Home() {
                             value={editProgressIntent}
                             onChange={(event) => {
                               setEditProgressIntent(event.target.value);
-                              setEditStatusChanged(true);
+                              setEditProgressChanged(true);
                             }}
                           >
                             <option value="START">Start New Lehr</option>
