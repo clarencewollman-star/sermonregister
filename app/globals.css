@@ -409,6 +409,14 @@ button.nav-link {
   margin: 0.25rem 0 0;
 }
 
+@media (pointer: coarse) {
+  #edit-service-text {
+    min-height: 48px;
+    font-size: 1rem;
+    touch-action: manipulation;
+  }
+}
+
 .detail-backdrop {
   border: 0;
 }
@@ -614,6 +622,164 @@ button.nav-link {
   .register-empty-state .bi {
     font-size: 1.25rem !important;
     margin-bottom: 0.35rem !important;
+  }
+
+  .mobile-page-count {
+    color: var(--bs-secondary-color);
+    font-size: 0.78rem;
+    font-weight: 500;
+    vertical-align: middle;
+  }
+
+  .text-toolbar {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .mobile-text-toolbar {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .mobile-text-toolbar .input-group,
+  .mobile-text-toolbar .form-select,
+  .mobile-text-toolbar .btn {
+    min-height: 38px;
+    font-size: 0.875rem;
+  }
+
+  .mobile-text-toolbar-actions {
+    display: flex;
+    min-width: 0;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .mobile-text-toolbar-actions > .form-select {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .mobile-text-toolbar .tag-filter,
+  .mobile-text-toolbar .tag-filter > .btn {
+    width: auto;
+    flex: 0 0 auto;
+  }
+
+  .mobile-text-selected-tags .selected-tag-chips {
+    flex-wrap: nowrap !important;
+    gap: 0.4rem !important;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
+    scrollbar-width: none;
+    white-space: nowrap;
+  }
+
+  .mobile-text-selected-tags .selected-tag-chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mobile-text-selected-tags .selected-tag-chips > * {
+    flex: 0 0 auto;
+  }
+
+  .compact-mobile-texts .mobile-library-text-row {
+    padding: 0.625rem 0.75rem;
+    text-align: left;
+  }
+
+  .compact-mobile-texts .mobile-library-text-row:active {
+    background: var(--bs-primary-bg-subtle);
+  }
+
+  .mobile-library-text-title,
+  .mobile-library-text-description {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-library-text-title {
+    font-size: 0.98rem;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .mobile-library-text-description {
+    margin-top: 0.15rem;
+    color: var(--bs-secondary-color);
+    font-size: 0.8rem;
+    line-height: 1.2;
+  }
+
+  .mobile-library-reference-row {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.35rem;
+    margin-top: 0.25rem;
+  }
+
+  .mobile-library-scripture {
+    display: inline-flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 0.25rem;
+    overflow: hidden;
+    color: var(--bs-secondary-color);
+    font-size: 0.75rem;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .mobile-library-scripture .bi {
+    flex: 0 0 auto;
+  }
+
+  .mobile-library-scripture span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-library-tags {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 55%;
+    flex: 0 1 auto;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.2rem;
+  }
+
+  .mobile-text-list .mobile-library-tags .tag-badge-button,
+  .mobile-text-list .mobile-library-more-tags {
+    max-width: 5rem;
+    padding: 0.14rem 0.3rem;
+    overflow: hidden;
+    font-size: 0.6rem;
+    font-weight: 500;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-library-more-tags {
+    flex: 0 0 auto;
+  }
+
+  .mobile-library-usage {
+    display: block;
+    margin-top: 0.22rem;
+    overflow: hidden;
+    color: var(--bs-secondary-color);
+    font-size: 0.72rem;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .mobile-tabbar {
@@ -831,6 +997,25 @@ button.nav-link {
   max-height: 18rem;
   overflow-y: auto;
   background: var(--bs-body-bg);
+}
+
+.service-text-choice {
+  position: relative;
+}
+
+.service-text-suggestions {
+  position: absolute;
+  z-index: 1070;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  left: 0;
+  max-height: min(20rem, 42dvh);
+  overflow-y: auto;
+  background: var(--bs-body-bg);
+}
+
+.service-text-suggestions .list-group-item {
+  padding: 0.55rem 0.75rem;
 }
 
 .service-text-tags .badge,

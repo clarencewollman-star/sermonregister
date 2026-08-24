@@ -362,6 +362,15 @@ function firstLine(value: string) {
   return value.split(/\r?\n/, 1)[0].trim();
 }
 
+function textUsageSummary(record: TextRecord) {
+  const parts =
+    record.timesUsed > 0
+      ? [`${record.timesUsed} Uses`, `Last ${record.lastUsed}`]
+      : ["Never Used"];
+  if (record.attachmentCount) parts.push(`${record.attachmentCount} PDFs`);
+  return parts.join(" · ");
+}
+
 function statusBadgeClass(status: string) {
   if (status === "Completed" || status === "Completed Lehr") {
     return "text-bg-success";
@@ -507,6 +516,93 @@ function TagPicker({
         </div>
       )}
       <div className="form-text">Choose Existing Tags Or Type A New Tag And Press Enter.</div>
+    </div>
+  );
+}
+
+function TextChoiceInput({
+  id,
+  name,
+  defaultValue,
+  choices,
+  required = false,
+}: {
+  id: string;
+  name: string;
+  defaultValue: string;
+  choices: TextRecord[];
+  required?: boolean;
+}) {
+  const [value, setValue] = useState(defaultValue);
+  const [focused, setFocused] = useState(false);
+  const query = value.trim().toLowerCase();
+  const suggestions = choices
+    .filter((record) => !query || record.text.toLowerCase().includes(query))
+    .slice(0, 6);
+
+  return (
+    <div
+      className="service-text-choice"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
+    >
+      <input
+        className="form-control"
+        id={id}
+        name={name}
+        value={value}
+        autoComplete="off"
+        autoCorrect="off"
+        aria-autocomplete="list"
+        aria-controls={`${id}-suggestions`}
+        aria-expanded={focused}
+        role="combobox"
+        required={required}
+        onFocus={() => setFocused(true)}
+        onChange={(event) => {
+          setValue(event.target.value);
+          setFocused(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setFocused(false);
+        }}
+      />
+      {focused && (
+        <div
+          className="list-group service-text-suggestions shadow-sm"
+          id={`${id}-suggestions`}
+          role="listbox"
+        >
+          {suggestions.map((record) => (
+            <button
+              className="list-group-item list-group-item-action text-start"
+              type="button"
+              role="option"
+              aria-selected={record.text === value}
+              key={record.id}
+              onClick={() => {
+                setValue(record.text);
+                setFocused(false);
+              }}
+            >
+              <span className="d-block fw-semibold text-truncate">{record.text}</span>
+              {record.description && (
+                <small className="d-block text-body-secondary text-truncate">
+                  {record.description}
+                </small>
+              )}
+            </button>
+          ))}
+          {!suggestions.length && value.trim() && (
+            <div className="list-group-item text-body-secondary small">
+              No Existing Text Matches. This New Text Name Will Be Used.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -696,8 +792,12 @@ function SelectedTagChips({
           </button>
         ) : null;
       })}
-      <button className="btn btn-link btn-sm p-0" type="button" onClick={() => onChange([])}>
-        Clear Tags
+      <button
+        className="btn btn-link btn-sm p-0 selected-tag-clear"
+        type="button"
+        onClick={() => onChange([])}
+      >
+        Clear<span className="d-none d-md-inline"> Tags</span>
       </button>
     </div>
   );
@@ -1892,7 +1992,15 @@ export default function Home() {
           <div className="container-fluid">
             <div className="row align-items-center">
               <div className="col-sm-6">
-                <h3 className="mb-0">{active === "Register" ? "Lehr Register" : active}</h3>
+                <h3 className="mb-0">
+                  {active === "Register" ? "Lehr Register" : active}
+                  {active === "Texts" && (
+                    <span className="mobile-page-count d-sm-none">
+                      <span aria-hidden="true"> · </span>
+                      {visibleTexts.length}
+                    </span>
+                  )}
+                </h3>
                 <p className="text-body-secondary mb-0 mt-1">
                   {active === "Register"
                     ? "Weekly Lehr And Gebet History"
@@ -2460,8 +2568,8 @@ export default function Home() {
               </div>
             ) : active === "Texts" ? (
               <div className="card card-primary card-outline shadow-sm texts-card">
-                <div className="card-header border-bottom">
-                  <div className="row g-2 align-items-center">
+                <div className="card-header border-bottom text-toolbar">
+                  <div className="row g-2 align-items-center d-none d-md-flex">
                     <div className="col-12 col-md">
                       <div className="input-group">
                         <span className="input-group-text">
@@ -2481,54 +2589,13 @@ export default function Home() {
                         tags={tags}
                         selectedIds={selectedTagIds}
                         onChange={setSelectedTagIds}
-                        mobile={mobile}
+                        mobile={false}
                         onManage={() => {
                           setTagManagerError("");
                           setTagManagerQuery("");
                           setTagManagerOpen(true);
                         }}
                       />
-                    </div>
-                    <div className="col-8 d-md-none">
-                      <select
-                        className="form-select"
-                        value={textSort}
-                        onChange={(event) => {
-                          const field = event.target.value as TextSortField;
-                          setTextSort(field);
-                          setTextSortDirection(field === "text" ? "asc" : "desc");
-                        }}
-                        aria-label="Sort Texts By"
-                      >
-                        <option value="text">Sort By Text</option>
-                        <option value="tags">Sort By Tags</option>
-                        <option value="timesUsed">Sort By Times Used</option>
-                        <option value="lastUsed">Sort By Last Used</option>
-                      </select>
-                    </div>
-                    <div className="col-4 d-md-none">
-                      <button
-                        className="btn btn-outline-secondary w-100"
-                        type="button"
-                        onClick={() =>
-                          setTextSortDirection((current) =>
-                            current === "asc" ? "desc" : "asc",
-                          )
-                        }
-                        aria-label={
-                          textSortDirection === "asc"
-                            ? "Sort Descending"
-                            : "Sort Ascending"
-                        }
-                      >
-                        <i
-                          className={`bi ${
-                            textSortDirection === "asc"
-                              ? "bi-sort-up"
-                              : "bi-sort-down"
-                          }`}
-                        />
-                      </button>
                     </div>
                     <div className="col-auto">
                       <span className="badge text-bg-primary rounded-pill">
@@ -2553,11 +2620,84 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
-                  <SelectedTagChips
-                    tags={tags}
-                    selectedIds={selectedTagIds}
-                    onChange={setSelectedTagIds}
-                  />
+                  <div className="mobile-text-toolbar d-md-none">
+                    <div className="input-group">
+                      <span className="input-group-text">
+                        <i className="bi bi-search" />
+                      </span>
+                      <input
+                        className="form-control"
+                        value={textQuery}
+                        onChange={(event) => setTextQuery(event.target.value)}
+                        placeholder="Search Texts"
+                        aria-label="Search Texts"
+                      />
+                    </div>
+                    <div className="mobile-text-toolbar-actions">
+                      <select
+                        className="form-select"
+                        value={`${textSort}:${textSortDirection}`}
+                        onChange={(event) => {
+                          const [field, direction] = event.target.value.split(":") as [
+                            TextSortField,
+                            "asc" | "desc",
+                          ];
+                          setTextSort(field);
+                          setTextSortDirection(direction);
+                        }}
+                        aria-label="Sort Texts By"
+                      >
+                        <option value="text:asc">Text A–Z</option>
+                        <option value="text:desc">Text Z–A</option>
+                        <option value="tags:asc">Tags A–Z</option>
+                        <option value="tags:desc">Tags Z–A</option>
+                        <option value="timesUsed:desc">Most Used</option>
+                        <option value="timesUsed:asc">Least Used</option>
+                        <option value="lastUsed:desc">Recently Used</option>
+                        <option value="lastUsed:asc">Oldest Used</option>
+                      </select>
+                      <TagFilter
+                        tags={tags}
+                        selectedIds={selectedTagIds}
+                        onChange={setSelectedTagIds}
+                        mobile
+                        onManage={() => {
+                          setTagManagerError("");
+                          setTagManagerQuery("");
+                          setTagManagerOpen(true);
+                        }}
+                      />
+                      <button
+                        className="btn btn-primary flex-shrink-0"
+                        type="button"
+                        onClick={() => {
+                          setTextError("");
+                          setTextAutoSaveStatus("");
+                          textAutoSaveFailed.current = false;
+                          setTextAttachments([]);
+                          setTextEditorTags([]);
+                          setTextEditor("new");
+                        }}
+                      >
+                        <i className="bi bi-plus-lg me-1" />
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                  <div className="d-none d-md-block">
+                    <SelectedTagChips
+                      tags={tags}
+                      selectedIds={selectedTagIds}
+                      onChange={setSelectedTagIds}
+                    />
+                  </div>
+                  <div className="mobile-text-selected-tags d-md-none">
+                    <SelectedTagChips
+                      tags={tags}
+                      selectedIds={selectedTagIds}
+                      onChange={setSelectedTagIds}
+                    />
+                  </div>
                 </div>
 
                 {textError && !textEditor && (
@@ -2750,65 +2890,81 @@ export default function Home() {
                   </table>
                 </div>
 
-                <div className="list-group list-group-flush mobile-text-list">
-                  {visibleTexts.map((record) => (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      className="list-group-item list-group-item-action p-3 text-start"
-                      key={record.id}
-                      onClick={() => openTextEditor(record)}
-                      onKeyDown={(event) =>
-                        (event.key === "Enter" || event.key === " ") &&
-                        openTextEditor(record)
-                      }
-                    >
-                      <strong className="d-block">{record.text}</strong>
-                      {record.description && (
-                        <span className="d-block text-body-secondary mt-1">
-                          {record.description}
-                        </span>
-                      )}
-                      {record.scriptureReference && (
-                        <span className="badge text-bg-light border mt-2">
-                          {firstLine(record.scriptureReference)}
-                        </span>
-                      )}
-                      {record.tags && (
-                        <span className="d-flex flex-wrap gap-1 mt-2">
-                          {record.tags
-                            .split(",")
-                            .map((tag) => tag.trim())
-                            .filter(Boolean)
-                            .map((tag) => {
-                              const tagRecord = record.tagRecords.find(
-                                (item) => item.name === tag,
-                              );
-                              return (
-                                <button
-                                  className="badge text-bg-primary-subtle border tag-badge-button"
-                                  type="button"
-                                  key={tag}
-                                  onKeyDown={(event) => event.stopPropagation()}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    if (tagRecord) setSelectedTagIds([tagRecord.id]);
-                                  }}
-                                >
-                                  {tag}
-                                </button>
-                              );
-                            })}
-                        </span>
-                      )}
-                      <small className="d-block text-body-secondary mt-2">
-                        {record.timesUsed} Times Used · Last Used {record.lastUsed}
-                        {record.attachmentCount
-                          ? ` · ${record.attachmentCount} PDFs`
-                          : ""}
-                      </small>
-                    </div>
-                  ))}
+                <div className="list-group list-group-flush mobile-text-list compact-mobile-texts">
+                  {visibleTexts.map((record) => {
+                    const alphabeticalTags = [...record.tagRecords].sort((left, right) =>
+                      left.name.localeCompare(right.name),
+                    );
+                    const visibleTags = alphabeticalTags.slice(0, 2);
+                    const hiddenTagCount = Math.max(0, alphabeticalTags.length - 2);
+                    const scripture = firstLine(record.scriptureReference);
+                    return (
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className="list-group-item list-group-item-action mobile-library-text-row"
+                        key={record.id}
+                        onClick={() => openTextEditor(record)}
+                        onKeyDown={(event) =>
+                          (event.key === "Enter" || event.key === " ") &&
+                          openTextEditor(record)
+                        }
+                      >
+                        <strong className="mobile-library-text-title">
+                          {record.text}
+                        </strong>
+                        {record.description && (
+                          <span className="mobile-library-text-description">
+                            {record.description}
+                          </span>
+                        )}
+                        {(scripture || visibleTags.length > 0) && (
+                          <div className="mobile-library-reference-row">
+                            {scripture && (
+                              <span
+                                className="mobile-library-scripture"
+                                title={scripture}
+                              >
+                                <i className="bi bi-book" aria-hidden="true" />
+                                <span>{scripture}</span>
+                              </span>
+                            )}
+                            {visibleTags.length > 0 && (
+                              <span className="mobile-library-tags">
+                                {visibleTags.map((tag) => (
+                                  <button
+                                    className="badge text-bg-primary-subtle border tag-badge-button"
+                                    type="button"
+                                    key={tag.id}
+                                    title={tag.name}
+                                    aria-label={`Filter By Tag ${tag.name}`}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedTagIds([tag.id]);
+                                    }}
+                                  >
+                                    {tag.name}
+                                  </button>
+                                ))}
+                                {hiddenTagCount > 0 && (
+                                  <span
+                                    className="badge text-bg-light border mobile-library-more-tags"
+                                    aria-label={`${hiddenTagCount} More Tags`}
+                                  >
+                                    +{hiddenTagCount}
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <small className="mobile-library-usage">
+                          {textUsageSummary(record)}
+                        </small>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {!visibleTexts.length && (
@@ -3455,12 +3611,11 @@ export default function Home() {
                       <label className="form-label" htmlFor="edit-service-text">
                         Text
                       </label>
-                      <input
-                        className="form-control"
+                      <TextChoiceInput
                         id="edit-service-text"
                         name="editText"
-                        list="texts-list"
                         defaultValue={selected.text}
+                        choices={textChoices}
                         required
                       />
                     </div>
@@ -3499,9 +3654,10 @@ export default function Home() {
                             className="form-select"
                             id="edit-progress-intent"
                             value={editProgressIntent}
-                            onChange={(event) =>
-                              setEditProgressIntent(event.target.value)
-                            }
+                            onChange={(event) => {
+                              setEditProgressIntent(event.target.value);
+                              setEditStatusChanged(true);
+                            }}
                           >
                             <option value="START">Start New Lehr</option>
                             <option value="CONTINUE">Continue Existing Lehr</option>
@@ -3622,7 +3778,7 @@ export default function Home() {
                             </div>
                           ) : (
                             <div className="alert alert-warning mb-0">
-                              Saving This Gebet Will Start A New Lehr.
+                              No Lehr Progress Is Linked To This Older Gebet.
                             </div>
                           )}
                           <div className="form-text">

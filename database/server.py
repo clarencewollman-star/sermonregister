@@ -1056,6 +1056,8 @@ def update_service_progress(con, service_id, service_type, service_date, text_id
         (service_id,),
     ).fetchone()
     if not membership:
+        if not status_changed:
+            return None
         return assign_new_service_progress(
             con, service_id, service_type, service_date, text_id,
             intent, status, completed, stamp
