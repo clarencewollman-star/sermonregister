@@ -1,6 +1,6 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
-ARG APP_VERSION=0.13.3
+ARG APP_VERSION=0.14.0
 ENV APP_VERSION=${APP_VERSION}
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -10,13 +10,14 @@ RUN pnpm run build
 
 FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
-ARG APP_VERSION=0.13.3
+ARG APP_VERSION=0.14.0
 LABEL org.opencontainers.image.version=${APP_VERSION}
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 ENV APP_VERSION=${APP_VERSION}
+ENV APP_TIMEZONE=America/Los_Angeles
 ENV APP_ORIGIN=http://localhost:3000
 ENV API_HOST=0.0.0.0
 COPY --from=build /app /app

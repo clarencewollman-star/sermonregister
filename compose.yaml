@@ -10,5 +10,6 @@ services:
     environment:
       APP_ORIGIN: http://localhost:3810
       API_HOST: 0.0.0.0
+      APP_TIMEZONE: America/Los_Angeles
     volumes:
       - /docker/sermonregister/data:/app/data

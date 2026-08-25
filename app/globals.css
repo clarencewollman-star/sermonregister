@@ -69,6 +69,41 @@ button.nav-link {
   color: var(--bs-success);
 }
 
+.backup-nav-indicator {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-left: 0.55rem;
+  border-radius: 50%;
+  vertical-align: 0.05rem;
+}
+
+.backup-nav-indicator.is-amber {
+  background: var(--bs-warning);
+}
+
+.backup-nav-indicator.is-red {
+  background: var(--bs-danger);
+}
+
+.settings-backup-card .progress {
+  height: 0.65rem;
+}
+
+.backup-action-panel {
+  background: var(--bs-tertiary-bg);
+}
+
+.backup-history-table td,
+.backup-history-table th {
+  white-space: nowrap;
+}
+
+.backup-history-table td:nth-child(3) {
+  min-width: 18rem;
+  white-space: normal;
+}
+
 .app-main {
   min-width: 0;
 }
@@ -456,6 +491,15 @@ button.nav-link {
 }
 
 @media (max-width: 767.98px) {
+  .settings-backup-card .card-header,
+  .settings-backup-card .card-body {
+    padding-inline: 0.85rem;
+  }
+
+  .backup-summary-row .border {
+    padding: 0.75rem !important;
+  }
+
   .app-content-header {
     padding-bottom: 0.5rem;
   }

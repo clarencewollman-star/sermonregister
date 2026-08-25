@@ -4,12 +4,17 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
+import threading
+import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(
@@ -23,6 +28,26 @@ APP_ORIGIN = os.environ.get("APP_ORIGIN", "http://localhost:3000")
 API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("API_PORT", "3001"))
 MAX_PDF_BYTES = 25 * 1024 * 1024
+APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "America/Los_Angeles")
+try:
+    LOCAL_TIMEZONE = ZoneInfo(APP_TIMEZONE)
+except ZoneInfoNotFoundError:
+    LOCAL_TIMEZONE = datetime.now().astimezone().tzinfo or timezone.utc
+try:
+    APP_VERSION = os.environ.get("APP_VERSION") or json.loads(
+        (ROOT / "package.json").read_text(encoding="utf-8")
+    )["version"]
+except (OSError, KeyError, json.JSONDecodeError):
+    APP_VERSION = "unknown"
+
+BACKUP_TEMP_PATH = DB_PATH.parent / "backups" / ".temporary"
+BACKUP_HISTORY_KEY = "backup_history_v1"
+LAST_SUCCESSFUL_BACKUP_KEY = "last_successful_backup_v1"
+BACKUP_FORMAT_VERSION = 1
+BACKUP_JOB_TTL_SECONDS = 60 * 60
+DATA_WRITE_LOCK = threading.RLock()
+BACKUP_JOBS_LOCK = threading.Lock()
+BACKUP_JOBS = {}
 
 
 SERVICES_V2_SQL = """
@@ -278,6 +303,7 @@ def initialize_database():
         run_one_time_status_cleanup(con, DB_PATH)
         run_one_time_legacy_gebet_progress_cleanup(con, DB_PATH)
         con.commit()
+    cleanup_stale_backup_files()
 
 
 def master_id(con, table, value_column, value, extra=None):
@@ -677,6 +703,441 @@ def set_metadata(con, key, value):
              SET value = excluded.value, updated_at = excluded.updated_at""",
         (key, value, now()),
     )
+
+
+class BackupCancelled(Exception):
+    pass
+
+
+def local_now():
+    return datetime.now(LOCAL_TIMEZONE)
+
+
+def human_bytes(value):
+    size = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def backup_history(con):
+    raw_value = metadata_value(con, BACKUP_HISTORY_KEY)
+    if not raw_value:
+        return []
+    try:
+        records = json.loads(raw_value)
+        return records if isinstance(records, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def record_backup_attempt(status, job):
+    record = {
+        "id": job["id"],
+        "createdAt": job.get("createdAt") or now(),
+        "finishedAt": now(),
+        "status": status,
+        "fileName": job.get("fileName"),
+        "byteSize": int(job.get("byteSize") or 0),
+        "pdfCount": int(job.get("pdfCount") or 0),
+        "error": job.get("error"),
+    }
+    with DATA_WRITE_LOCK:
+        with connect() as con:
+            records = [
+                item for item in backup_history(con)
+                if item.get("id") != job["id"]
+            ]
+            records.insert(0, record)
+            set_metadata(con, BACKUP_HISTORY_KEY, json.dumps(records[:5]))
+            if status == "SUCCESS":
+                set_metadata(
+                    con,
+                    LAST_SUCCESSFUL_BACKUP_KEY,
+                    json.dumps(
+                        {
+                            "createdAt": record["finishedAt"],
+                            "fileName": record["fileName"],
+                            "byteSize": record["byteSize"],
+                            "pdfCount": record["pdfCount"],
+                        }
+                    ),
+                )
+            con.commit()
+
+
+def cleanup_stale_backup_files():
+    backup_root = (DB_PATH.parent / "backups").resolve()
+    temporary_root = BACKUP_TEMP_PATH.resolve()
+    if os.path.commonpath((str(backup_root), str(temporary_root))) != str(backup_root):
+        raise RuntimeError("Invalid temporary backup path")
+    if temporary_root.exists():
+        shutil.rmtree(temporary_root)
+    temporary_root.mkdir(parents=True, exist_ok=True)
+
+
+def attachment_backup_rows(con):
+    rows = []
+    specifications = (
+        ("service_attachments", "service_id", "services"),
+        ("text_attachments", "text_id", "texts"),
+        ("vorrade_attachments", "vorrade_id", "vorraden"),
+    )
+    for table, owner_column, category in specifications:
+        for row in con.execute(
+            f"""SELECT id, {owner_column} AS owner_id, original_file_name,
+                       storage_key, byte_size, sha256
+                  FROM {table}
+              ORDER BY storage_key"""
+        ):
+            record = dict(row)
+            record["category"] = category
+            rows.append(record)
+    return rows
+
+
+def backup_counts(con):
+    tables = ("services", "texts", "songs", "vorraden", "people")
+    return {
+        table: int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in tables
+    }
+
+
+def backup_overview():
+    with connect() as con:
+        counts = backup_counts(con)
+        pdf_count = sum(
+            con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "service_attachments", "text_attachments", "vorrade_attachments"
+            )
+        )
+        pdf_bytes = sum(
+            con.execute(
+                f"SELECT COALESCE(SUM(byte_size), 0) FROM {table}"
+            ).fetchone()[0]
+            for table in (
+                "service_attachments", "text_attachments", "vorrade_attachments"
+            )
+        )
+        last_raw = metadata_value(con, LAST_SUCCESSFUL_BACKUP_KEY)
+        try:
+            last_success = json.loads(last_raw) if last_raw else None
+        except json.JSONDecodeError:
+            last_success = None
+        history = backup_history(con)
+    last_created = last_success.get("createdAt") if last_success else None
+    reminder = "NEVER"
+    next_recommended = None
+    if last_created:
+        try:
+            last_time = datetime.fromisoformat(last_created.replace("Z", "+00:00"))
+            age_days = max(
+                0, int((datetime.now(timezone.utc) - last_time).total_seconds() // 86400)
+            )
+            reminder = "RED" if age_days >= 30 else "AMBER" if age_days >= 14 else "CURRENT"
+            next_recommended = (
+                last_time.timestamp() + (14 * 86400)
+            )
+            next_recommended = datetime.fromtimestamp(
+                next_recommended, timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError):
+            reminder = "NEVER"
+    return {
+        "appVersion": APP_VERSION,
+        "timeZone": APP_TIMEZONE,
+        "reminder": reminder,
+        "lastSuccessfulBackup": last_success,
+        "nextRecommendedAt": next_recommended,
+        "databaseBytes": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+        "pdfBytes": int(pdf_bytes or 0),
+        "pdfCount": int(pdf_count or 0),
+        "counts": counts,
+        "history": history[:5],
+    }
+
+
+def file_sha256(file_path, cancel_event=None):
+    digest = hashlib.sha256()
+    with file_path.open("rb") as file_handle:
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise BackupCancelled()
+            block = file_handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def set_backup_job(job_id, **values):
+    with BACKUP_JOBS_LOCK:
+        job = BACKUP_JOBS.get(job_id)
+        if job:
+            job.update(values)
+
+
+def public_backup_job(job):
+    return {
+        key: value
+        for key, value in job.items()
+        if key not in ("cancelEvent", "directory", "zipPath", "finishedEpoch")
+    }
+
+
+def check_backup_cancelled(job):
+    if job["cancelEvent"].is_set():
+        raise BackupCancelled()
+
+
+def backup_restore_instructions(manifest):
+    return "\n".join(
+        (
+            "Lehr Register Backup",
+            "====================",
+            "",
+            f"Backup Format Version: {manifest['backupFormatVersion']}",
+            f"Application Version: {manifest['applicationVersion']}",
+            f"Database Schema Version: {manifest['databaseSchemaVersion']}",
+            "",
+            "This backup contains a transactionally consistent SQLite database",
+            "and the exact private upload layout used by Lehr Register.",
+            "",
+            "Do not copy these files over a running application.",
+            "The supported in-app restore workflow will be added after restore",
+            "testing is complete. Until then, preserve this ZIP unchanged and use",
+            "the documented server recovery procedure for the matching or a newer",
+            "compatible application version.",
+            "",
+        )
+    )
+
+
+def create_backup_job(job_id):
+    with BACKUP_JOBS_LOCK:
+        job = BACKUP_JOBS[job_id]
+    job_directory = Path(job["directory"])
+    snapshot_path = job_directory / "sermon-register.db"
+    staged_uploads = job_directory / "uploads"
+    try:
+        set_backup_job(job_id, status="RUNNING", stage="CHECKING_DATABASE")
+        check_backup_cancelled(job)
+        with DATA_WRITE_LOCK:
+            with connect() as source:
+                integrity = source.execute("PRAGMA quick_check").fetchone()[0]
+                if str(integrity).lower() != "ok":
+                    raise RuntimeError("The SQLite Database Integrity Check Failed.")
+                attachments = attachment_backup_rows(source)
+                expected_upload_bytes = sum(
+                    int(attachment["byte_size"]) for attachment in attachments
+                )
+                database_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+                required_bytes = expected_upload_bytes + (database_bytes * 2) + 50 * 1024 * 1024
+                available_bytes = shutil.disk_usage(DB_PATH.parent).free
+                if available_bytes < required_bytes:
+                    raise RuntimeError(
+                        "Not Enough Server Space To Create The Backup. "
+                        f"Required {human_bytes(required_bytes)}, "
+                        f"Available {human_bytes(available_bytes)}."
+                    )
+
+                set_backup_job(job_id, stage="CREATING_SNAPSHOT")
+                job_directory.mkdir(parents=True, exist_ok=False)
+                snapshot = sqlite3.connect(snapshot_path)
+                try:
+                    def backup_progress(status, remaining, total):
+                        check_backup_cancelled(job)
+                    source.backup(snapshot, pages=256, progress=backup_progress)
+                finally:
+                    snapshot.close()
+
+                for attachment in attachments:
+                    check_backup_cancelled(job)
+                    source_path = attachment_path(attachment["storage_key"])
+                    if not source_path.is_file():
+                        raise RuntimeError(
+                            f"A PDF File Is Missing (File ID {attachment['id']})."
+                        )
+                    destination = staged_uploads / attachment["storage_key"]
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        os.link(source_path, destination)
+                    except OSError as exc:
+                        raise RuntimeError(
+                            "The Server Data Volume Could Not Create A Safe Backup Snapshot."
+                        ) from exc
+
+        check_backup_cancelled(job)
+        set_backup_job(job_id, stage="VERIFYING_PDFS")
+        snapshot = sqlite3.connect(snapshot_path)
+        try:
+            snapshot.row_factory = sqlite3.Row
+            integrity = snapshot.execute("PRAGMA quick_check").fetchone()[0]
+            if str(integrity).lower() != "ok":
+                raise RuntimeError("The SQLite Backup Snapshot Integrity Check Failed.")
+            counts = backup_counts(snapshot)
+            schema_version = int(snapshot.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            snapshot.close()
+
+        manifest_files = []
+        for attachment in attachments:
+            check_backup_cancelled(job)
+            staged_path = staged_uploads / attachment["storage_key"]
+            actual_size = staged_path.stat().st_size
+            if actual_size != int(attachment["byte_size"]):
+                raise RuntimeError(
+                    f"A PDF File Has An Unexpected Size (File ID {attachment['id']})."
+                )
+            actual_hash = file_sha256(staged_path, job["cancelEvent"])
+            if actual_hash.lower() != str(attachment["sha256"]).lower():
+                raise RuntimeError(
+                    f"A PDF File Failed Verification (File ID {attachment['id']})."
+                )
+            manifest_files.append(
+                {
+                    "id": attachment["id"],
+                    "ownerId": attachment["owner_id"],
+                    "category": attachment["category"],
+                    "originalFileName": attachment["original_file_name"],
+                    "storageKey": attachment["storage_key"],
+                    "byteSize": actual_size,
+                    "sha256": actual_hash,
+                }
+            )
+
+        created_local = local_now()
+        manifest = {
+            "backupFormatVersion": BACKUP_FORMAT_VERSION,
+            "applicationVersion": APP_VERSION,
+            "databaseSchemaVersion": schema_version,
+            "createdAt": now(),
+            "createdAtLocal": created_local.isoformat(),
+            "timeZone": APP_TIMEZONE,
+            "dataPath": "/app/data",
+            "databaseIntegrity": "passed",
+            "counts": counts,
+            "pdfCount": len(manifest_files),
+            "pdfBytes": sum(item["byteSize"] for item in manifest_files),
+            "files": manifest_files,
+        }
+        manifest_path = job_directory / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        restore_path = job_directory / "RESTORE.txt"
+        restore_path.write_text(
+            backup_restore_instructions(manifest), encoding="utf-8"
+        )
+
+        check_backup_cancelled(job)
+        set_backup_job(job_id, stage="PACKAGING_BACKUP")
+        zip_path = Path(job["zipPath"])
+        with zipfile.ZipFile(
+            zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6,
+            allowZip64=True,
+        ) as archive:
+            archive.write(snapshot_path, "sermon-register.db")
+            archive.write(manifest_path, "manifest.json")
+            archive.write(restore_path, "RESTORE.txt")
+            for attachment in manifest_files:
+                check_backup_cancelled(job)
+                storage_key = attachment["storageKey"].replace("\\", "/")
+                archive.write(staged_uploads / attachment["storageKey"], f"uploads/{storage_key}")
+
+        check_backup_cancelled(job)
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            damaged_entry = archive.testzip()
+            if damaged_entry:
+                raise RuntimeError(f"The Backup ZIP Failed Verification ({damaged_entry}).")
+        byte_size = zip_path.stat().st_size
+        set_backup_job(
+            job_id,
+            status="READY",
+            stage="READY_TO_DOWNLOAD",
+            byteSize=byte_size,
+            pdfCount=len(manifest_files),
+            counts=counts,
+            sha256=file_sha256(zip_path, job["cancelEvent"]),
+            finishedEpoch=time.time(),
+        )
+    except BackupCancelled:
+        set_backup_job(
+            job_id,
+            status="CANCELLED",
+            stage="CANCELLED",
+            finishedEpoch=time.time(),
+        )
+        record_backup_attempt("CANCELLED", job)
+        shutil.rmtree(job_directory, ignore_errors=True)
+        Path(job["zipPath"]).unlink(missing_ok=True)
+    except Exception as exc:
+        set_backup_job(
+            job_id,
+            status="FAILED",
+            stage="FAILED",
+            error=str(exc),
+            finishedEpoch=time.time(),
+        )
+        job["error"] = str(exc)
+        record_backup_attempt("FAILED", job)
+        shutil.rmtree(job_directory, ignore_errors=True)
+        Path(job["zipPath"]).unlink(missing_ok=True)
+
+
+def cleanup_expired_backup_jobs():
+    cutoff = time.time() - BACKUP_JOB_TTL_SECONDS
+    expired = []
+    with BACKUP_JOBS_LOCK:
+        for job_id, job in list(BACKUP_JOBS.items()):
+            if job.get("finishedEpoch", float("inf")) < cutoff:
+                expired.append(BACKUP_JOBS.pop(job_id))
+    for job in expired:
+        shutil.rmtree(Path(job["directory"]), ignore_errors=True)
+        Path(job["zipPath"]).unlink(missing_ok=True)
+
+
+def start_backup_job():
+    cleanup_expired_backup_jobs()
+    with BACKUP_JOBS_LOCK:
+        active = next(
+            (
+                job for job in BACKUP_JOBS.values()
+                if job["status"] in ("QUEUED", "RUNNING", "READY", "DOWNLOADING")
+            ),
+            None,
+        )
+        if active:
+            raise ValueError("A Backup Is Already In Progress.")
+        job_id = str(uuid.uuid4())
+        timestamp = local_now().strftime("%Y-%m-%d-%H%M")
+        file_name = f"lehr-register-backup-{timestamp}-v{APP_VERSION}.zip"
+        job_directory = BACKUP_TEMP_PATH / job_id
+        zip_path = BACKUP_TEMP_PATH / f"{job_id}.zip"
+        job = {
+            "id": job_id,
+            "status": "QUEUED",
+            "stage": "WAITING_TO_START",
+            "createdAt": now(),
+            "fileName": file_name,
+            "byteSize": 0,
+            "pdfCount": 0,
+            "error": None,
+            "cancelEvent": threading.Event(),
+            "directory": str(job_directory),
+            "zipPath": str(zip_path),
+        }
+        BACKUP_JOBS[job_id] = job
+    threading.Thread(
+        target=create_backup_job,
+        args=(job_id,),
+        name=f"backup-{job_id[:8]}",
+        daemon=True,
+    ).start()
+    return public_backup_job(job)
 
 
 def seed_legacy_lehr_progress(con):
@@ -1756,9 +2217,108 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(file_data)
 
+    def backup_job_status(self, job_id):
+        cleanup_expired_backup_jobs()
+        with BACKUP_JOBS_LOCK:
+            job = BACKUP_JOBS.get(job_id)
+            if not job:
+                return self.json({"error": "Backup Job Not Found."}, 404)
+            payload = public_backup_job(job)
+        return self.json(payload)
+
+    def send_backup_download(self, job_id):
+        with BACKUP_JOBS_LOCK:
+            job = BACKUP_JOBS.get(job_id)
+            if not job:
+                return self.json({"error": "Backup Job Not Found."}, 404)
+            if job["status"] != "READY":
+                return self.json({"error": "The Backup Is Not Ready To Download."}, 409)
+            job["status"] = "DOWNLOADING"
+            job["stage"] = "STARTING_DOWNLOAD"
+        zip_path = Path(job["zipPath"])
+        if not zip_path.is_file():
+            set_backup_job(
+                job_id,
+                status="FAILED",
+                stage="FAILED",
+                error="The Temporary Backup File Is Missing.",
+                finishedEpoch=time.time(),
+            )
+            return self.json({"error": "The Temporary Backup File Is Missing."}, 404)
+        safe_name = job["fileName"].replace('"', "").replace("\r", "").replace("\n", "")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(zip_path.stat().st_size))
+            self.send_header(
+                "Content-Disposition", f'attachment; filename="{safe_name}"'
+            )
+            self.send_header("X-Backup-Job-Id", job_id)
+            self.send_header("Access-Control-Allow-Origin", self.allowed_origin())
+            self.send_header("Vary", "Origin")
+            self.end_headers()
+            with zip_path.open("rb") as file_handle:
+                while True:
+                    check_backup_cancelled(job)
+                    block = file_handle.read(1024 * 1024)
+                    if not block:
+                        break
+                    self.wfile.write(block)
+            self.wfile.flush()
+            record_backup_attempt("SUCCESS", job)
+            shutil.rmtree(Path(job["directory"]), ignore_errors=True)
+            zip_path.unlink(missing_ok=True)
+            set_backup_job(
+                job_id,
+                status="COMPLETE",
+                stage="DOWNLOAD_COMPLETE",
+                finishedEpoch=time.time(),
+            )
+        except (BackupCancelled, BrokenPipeError, ConnectionResetError, OSError):
+            error = "The Backup Download Was Interrupted."
+            set_backup_job(
+                job_id,
+                status="FAILED",
+                stage="FAILED",
+                error=error,
+                finishedEpoch=time.time(),
+            )
+            job["error"] = error
+            record_backup_attempt("FAILED", job)
+            shutil.rmtree(Path(job["directory"]), ignore_errors=True)
+            zip_path.unlink(missing_ok=True)
+
+    def cancel_backup_job(self, job_id):
+        with BACKUP_JOBS_LOCK:
+            job = BACKUP_JOBS.get(job_id)
+            if not job:
+                return self.json({"error": "Backup Job Not Found."}, 404)
+            if job["status"] in ("COMPLETE", "FAILED", "CANCELLED"):
+                return self.json(public_backup_job(job))
+            job["cancelEvent"].set()
+            ready = job["status"] == "READY"
+            if ready:
+                job["status"] = "CANCELLED"
+                job["stage"] = "CANCELLED"
+                job["finishedEpoch"] = time.time()
+            payload = public_backup_job(job)
+        if ready:
+            record_backup_attempt("CANCELLED", job)
+            shutil.rmtree(Path(job["directory"]), ignore_errors=True)
+            Path(job["zipPath"]).unlink(missing_ok=True)
+        return self.json(payload)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/backups":
+            parameters = parse_qs(parsed.query)
+            job_id = str(parameters.get("jobId", [""])[0]).strip()
+            if not job_id:
+                return self.json(backup_overview())
+            if str(parameters.get("download", [""])[0]) == "1":
+                return self.send_backup_download(job_id)
+            return self.backup_job_status(job_id)
         if path == "/songs":
             with connect() as con:
                 return self.json(song_rows(con))
@@ -1807,6 +2367,18 @@ class Handler(BaseHTTPRequestHandler):
             self.json(service_rows(con))
 
     def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/backups":
+            try:
+                return self.json(start_backup_job(), 202)
+            except ValueError as exc:
+                return self.json({"error": str(exc)}, 409)
+            except Exception as exc:
+                return self.json({"error": str(exc)}, 500)
+        with DATA_WRITE_LOCK:
+            return self.do_data_POST()
+
+    def do_data_POST(self):
         path = urlparse(self.path).path
         if path == "/songs":
             return self.create_song()
@@ -1906,6 +2478,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"error": str(exc)}, 500)
 
     def do_PUT(self):
+        with DATA_WRITE_LOCK:
+            return self.do_data_PUT()
+
+    def do_data_PUT(self):
         path = urlparse(self.path).path
         if path == "/songs":
             return self.update_song()
@@ -2028,6 +2604,20 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"error": str(exc)}, 500)
 
     def do_DELETE(self):
+        path = urlparse(self.path).path
+        if path == "/backups":
+            try:
+                body = self.body()
+                job_id = str(body.get("jobId", "")).strip()
+                if not job_id:
+                    return self.json({"error": "Backup Job Is Required."}, 400)
+                return self.cancel_backup_job(job_id)
+            except Exception as exc:
+                return self.json({"error": str(exc)}, 500)
+        with DATA_WRITE_LOCK:
+            return self.do_data_DELETE()
+
+    def do_data_DELETE(self):
         path = urlparse(self.path).path
         if path == "/tags":
             return self.delete_tag()

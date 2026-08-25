@@ -48,7 +48,7 @@ The repository's package visibility settings determine who can download that ima
 
 ## Application version
 
-The current release is `0.4.0`. It is shown in the application header, stored in the image's OCI version label, and published as the GHCR tag `0.4.0`. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
+The current release is `0.14.0`. It is shown in the application header, stored in the image's OCI version label, and published as the GHCR tag `0.14.0`. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
 
 ## Private CSV Import
 
@@ -73,7 +73,9 @@ These paths remain local and are not committed or copied into the image:
 - `data/backups/`
 - `.env*`
 
-Back up the SQLite database and uploads together. Do not expose the current application directly to the public internet: authentication, private HTTPS access, PDF handling, and automated backups are later stages documented in `DESIGN.md`.
+Use **Settings → Backup And Restore → Create And Download Backup** to download a validated full ZIP containing the SQLite snapshot, uploads, manifest, and restore instructions. The quiet Settings indicator is amber after 14 days and red after 30 days. Move the ZIP to `Documents\Lehr Register Backups` on the private Windows computer. The initial ZIP is not encrypted, and a user-facing Restore action is intentionally deferred until an isolated restore test is complete.
+
+Do not expose the current application directly to the public internet: authentication, private HTTPS access, encrypted/off-server automation, and the tested restore workflow remain later stages documented in `DESIGN.md`.
 
 ## Verification
 

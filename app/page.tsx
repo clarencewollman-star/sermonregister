@@ -165,6 +165,59 @@ type TextAttachment = {
   created_at: string;
 };
 
+type BackupHistoryItem = {
+  id: string;
+  createdAt: string;
+  finishedAt: string;
+  status: "SUCCESS" | "FAILED" | "CANCELLED";
+  fileName: string | null;
+  byteSize: number;
+  pdfCount: number;
+  error: string | null;
+};
+
+type BackupOverview = {
+  appVersion: string;
+  timeZone: string;
+  reminder: "NEVER" | "CURRENT" | "AMBER" | "RED";
+  lastSuccessfulBackup: {
+    createdAt: string;
+    fileName: string;
+    byteSize: number;
+    pdfCount: number;
+  } | null;
+  nextRecommendedAt: string | null;
+  databaseBytes: number;
+  pdfBytes: number;
+  pdfCount: number;
+  counts: {
+    services: number;
+    texts: number;
+    songs: number;
+    vorraden: number;
+    people: number;
+  };
+  history: BackupHistoryItem[];
+};
+
+type BackupJob = {
+  id: string;
+  status:
+    | "QUEUED"
+    | "RUNNING"
+    | "READY"
+    | "DOWNLOADING"
+    | "COMPLETE"
+    | "FAILED"
+    | "CANCELLED";
+  stage: string;
+  createdAt: string;
+  fileName: string;
+  byteSize: number;
+  pdfCount: number;
+  error: string | null;
+};
+
 type EntryType = "" | "Lehr" | "Gebet";
 type ProgressMatch = {
   id: string;
@@ -181,6 +234,7 @@ const navItems = [
   { label: "Texts", icon: "bi-journal-text" },
   { label: "Vorraden", icon: "bi-files" },
   { label: "Songs", icon: "bi-music-note-list" },
+  { label: "Settings", icon: "bi-gear" },
 ];
 
 const blankDraft = () => ({
@@ -205,6 +259,60 @@ const textsApiUrl = () => "/api/texts";
 const textAttachmentsApiUrl = () => "/api/text-attachments";
 const progressMatchApiUrl = () => "/api/progress-match";
 const tagsApiUrl = () => "/api/tags";
+const backupsApiUrl = () => "/api/backups";
+
+const formatBytes = (value: number) => {
+  if (!value) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(
+    Math.floor(Math.log(value) / Math.log(1024)),
+    units.length - 1,
+  );
+  const amount = value / 1024 ** index;
+  return `${index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+};
+
+const formatBackupDate = (value: string | null | undefined) =>
+  value
+    ? new Date(value).toLocaleString("en-US", {
+        timeZone: "America/Los_Angeles",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "Not Yet Created";
+
+const backupStageLabel = (stage: string) => {
+  const labels: Record<string, string> = {
+    WAITING_TO_START: "Waiting To Start",
+    CHECKING_DATABASE: "Checking Database",
+    CREATING_SNAPSHOT: "Creating Stable Snapshot",
+    VERIFYING_PDFS: "Verifying PDFs",
+    PACKAGING_BACKUP: "Packaging Backup",
+    READY_TO_DOWNLOAD: "Starting Download",
+    STARTING_DOWNLOAD: "Downloading Backup",
+    DOWNLOAD_COMPLETE: "Backup Complete",
+    FAILED: "Backup Failed",
+    CANCELLED: "Backup Cancelled",
+  };
+  return labels[stage] || "Preparing Backup";
+};
+
+const backupStageProgress = (stage: string) => {
+  const percentages: Record<string, number> = {
+    WAITING_TO_START: 5,
+    CHECKING_DATABASE: 15,
+    CREATING_SNAPSHOT: 35,
+    VERIFYING_PDFS: 55,
+    PACKAGING_BACKUP: 78,
+    READY_TO_DOWNLOAD: 92,
+    STARTING_DOWNLOAD: 96,
+    DOWNLOAD_COMPLETE: 100,
+  };
+  return percentages[stage] || 10;
+};
 
 const tagFromApi = (row: ApiTagRecord): TagRecord => ({
   id: row.id,
@@ -863,6 +971,10 @@ export default function Home() {
   const [tagRenameValue, setTagRenameValue] = useState("");
   const [tagMergeId, setTagMergeId] = useState("");
   const [tagMergeTargetId, setTagMergeTargetId] = useState("");
+  const [backupOverview, setBackupOverview] = useState<BackupOverview | null>(null);
+  const [backupJob, setBackupJob] = useState<BackupJob | null>(null);
+  const [backupError, setBackupError] = useState("");
+  const backupDownloadStartedRef = useRef("");
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 767px)");
@@ -870,6 +982,14 @@ export default function Home() {
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    const section = new URLSearchParams(window.location.search).get("section");
+    if (section && navItems.some((item) => item.label === section)) {
+      const timer = window.setTimeout(() => setActive(section), 0);
+      return () => window.clearTimeout(timer);
+    }
   }, []);
 
   useEffect(() => {
@@ -988,6 +1108,48 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    void refreshBackupOverview().catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (active !== "Settings") return;
+    void refreshBackupOverview().catch(() =>
+      setBackupError("Backup Information Could Not Be Loaded."),
+    );
+  }, [active]);
+
+  useEffect(() => {
+    if (!backupJob) return;
+    if (
+      backupJob.status === "READY" &&
+      backupDownloadStartedRef.current !== backupJob.id
+    ) {
+      beginBackupDownload(backupJob);
+    }
+    if (["COMPLETE", "FAILED", "CANCELLED"].includes(backupJob.status)) {
+      void refreshBackupOverview().catch(() => undefined);
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(
+          `${backupsApiUrl()}?jobId=${encodeURIComponent(backupJob.id)}`,
+          { cache: "no-store" },
+        );
+        const result = (await response.json()) as BackupJob & { error?: string };
+        if (!response.ok) throw new Error(result.error || "Backup Status Is Unavailable.");
+        setBackupJob(result);
+        if (result.error) setBackupError(result.error);
+      } catch (error) {
+        setBackupError(
+          error instanceof Error ? error.message : "Backup Status Is Unavailable.",
+        );
+      }
+    }, 750);
+    return () => window.clearInterval(timer);
+  }, [backupJob]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       const saved = sessionStorage.getItem("sermon-register-service-draft");
       if (saved) {
@@ -1039,6 +1201,19 @@ export default function Home() {
       ),
     [items, query, filter, year, selectedTagIds],
   );
+
+  const backupRunning = Boolean(
+    backupJob &&
+      !["COMPLETE", "FAILED", "CANCELLED"].includes(backupJob.status),
+  );
+  const backupReminderLabel =
+    backupOverview?.reminder === "RED"
+      ? "Backup Overdue"
+      : backupOverview?.reminder === "AMBER"
+        ? "Backup Recommended"
+        : backupOverview?.reminder === "NEVER"
+          ? "No Backup Recorded"
+          : "Backup Current";
 
   const years = useMemo(
     () =>
@@ -1187,6 +1362,69 @@ export default function Home() {
     const response = await fetch(peopleApiUrl(), { cache: "no-store" });
     if (!response.ok) throw new Error("Could Not Refresh People");
     setPeople(((await response.json()) as ApiPerson[]).map(personFromApi));
+  }
+
+  async function refreshBackupOverview() {
+    const response = await fetch(backupsApiUrl(), { cache: "no-store" });
+    const result = (await response.json()) as BackupOverview & { error?: string };
+    if (!response.ok) {
+      throw new Error(result.error || "Backup Information Could Not Be Loaded.");
+    }
+    setBackupOverview(result);
+  }
+
+  async function startBackup() {
+    setBackupError("");
+    backupDownloadStartedRef.current = "";
+    try {
+      const response = await fetch(backupsApiUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const result = (await response.json()) as BackupJob & { error?: string };
+      if (!response.ok) throw new Error(result.error || "Backup Could Not Be Started.");
+      setBackupJob(result);
+    } catch (error) {
+      setBackupError(
+        error instanceof Error ? error.message : "Backup Could Not Be Started.",
+      );
+    }
+  }
+
+  function beginBackupDownload(job: BackupJob) {
+    backupDownloadStartedRef.current = job.id;
+    const download = document.createElement("a");
+    download.href = `${backupsApiUrl()}?jobId=${encodeURIComponent(job.id)}&download=1`;
+    download.download = job.fileName;
+    document.body.appendChild(download);
+    download.click();
+    download.remove();
+    setBackupJob((current) =>
+      current
+        ? { ...current, status: "DOWNLOADING", stage: "STARTING_DOWNLOAD" }
+        : current,
+    );
+  }
+
+  async function cancelBackup() {
+    if (!backupJob) return;
+    setBackupError("");
+    try {
+      const response = await fetch(backupsApiUrl(), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: backupJob.id }),
+      });
+      const result = (await response.json()) as BackupJob & { error?: string };
+      if (!response.ok) throw new Error(result.error || "Backup Could Not Be Cancelled.");
+      setBackupJob(result);
+      await refreshBackupOverview();
+    } catch (error) {
+      setBackupError(
+        error instanceof Error ? error.message : "Backup Could Not Be Cancelled.",
+      );
+    }
   }
 
   async function loadTextAttachments(textId: string) {
@@ -1859,6 +2097,10 @@ export default function Home() {
   function changeSection(section: string) {
     setActive(section);
     setSidebarOpen(false);
+    const url = new URL(window.location.href);
+    if (section === "Register") url.searchParams.delete("section");
+    else url.searchParams.set("section", section);
+    window.history.replaceState(null, "", url);
   }
 
   function openService(service: Service) {
@@ -1968,7 +2210,23 @@ export default function Home() {
                     onClick={() => changeSection(item.label)}
                   >
                     <i className={`nav-icon bi ${item.icon}`} />
-                    <p>{item.label}</p>
+                    <p>
+                      {item.label}
+                      {item.label === "Settings" &&
+                        backupOverview &&
+                        backupOverview.reminder !== "CURRENT" && (
+                          <span
+                            className={`backup-nav-indicator ${
+                              backupOverview.reminder === "RED" ? "is-red" : "is-amber"
+                            }`}
+                            aria-label={
+                              backupOverview.reminder === "RED"
+                                ? "Backup Overdue"
+                                : "Backup Recommended"
+                            }
+                          />
+                        )}
+                    </p>
                   </button>
                 </li>
               ))}
@@ -2007,7 +2265,9 @@ export default function Home() {
                 <p className="text-body-secondary mb-0 mt-1">
                   {active === "Register"
                     ? "Weekly Lehr And Gebet History"
-                    : `Reusable ${active} Records`}
+                    : active === "Settings"
+                      ? "Backup And Application Information"
+                      : `Reusable ${active} Records`}
                 </p>
               </div>
               <div className="col-sm-6 d-none d-sm-block">
@@ -3223,6 +3483,253 @@ export default function Home() {
                     No Songs Match Your Search.
                   </div>
                 )}
+              </div>
+            ) : active === "Settings" ? (
+              <div className="card card-primary card-outline shadow-sm settings-backup-card">
+                <div className="card-header border-bottom d-flex flex-wrap align-items-center justify-content-between gap-2">
+                  <div>
+                    <h4 className="card-title mb-1">Backup And Restore</h4>
+                    <div className="text-body-secondary small">
+                      Complete Manual Backups For Windows Or iPhone
+                    </div>
+                  </div>
+                  <span
+                    className={
+                      "badge rounded-pill " +
+                      (backupOverview?.reminder === "RED"
+                        ? "text-bg-danger"
+                        : backupOverview?.reminder === "CURRENT"
+                          ? "text-bg-success"
+                          : "text-bg-warning")
+                    }
+                  >
+                    {backupReminderLabel}
+                  </span>
+                </div>
+
+                <div className="card-body">
+                  {backupError && (
+                    <div className="alert alert-danger" role="alert">
+                      <i className="bi bi-exclamation-triangle-fill me-2" />
+                      {backupError}
+                    </div>
+                  )}
+
+                  <div className="row g-3 backup-summary-row">
+                    <div className="col-12 col-md-4">
+                      <div className="border rounded p-3 h-100 bg-body-tertiary">
+                        <div className="text-body-secondary small text-uppercase fw-semibold">
+                          Last Backup Created
+                        </div>
+                        <div className="fw-semibold mt-1">
+                          {formatBackupDate(
+                            backupOverview?.lastSuccessfulBackup?.createdAt,
+                          )}
+                        </div>
+                        {backupOverview?.nextRecommendedAt && (
+                          <small className="text-body-secondary d-block mt-1">
+                            Next Recommended{" "}
+                            {formatBackupDate(backupOverview.nextRecommendedAt)}
+                          </small>
+                        )}
+                      </div>
+                    </div>
+                    <div className="col-6 col-md-2">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-body-secondary small">Services</div>
+                        <div className="fs-4 fw-semibold">
+                          {backupOverview?.counts.services ?? "—"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-6 col-md-2">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-body-secondary small">PDFs</div>
+                        <div className="fs-4 fw-semibold">
+                          {backupOverview?.pdfCount ?? "—"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-6 col-md-2">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-body-secondary small">Database</div>
+                        <div className="fw-semibold mt-2">
+                          {backupOverview
+                            ? formatBytes(backupOverview.databaseBytes)
+                            : "—"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-6 col-md-2">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-body-secondary small">PDF Storage</div>
+                        <div className="fw-semibold mt-2">
+                          {backupOverview ? formatBytes(backupOverview.pdfBytes) : "—"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="backup-action-panel border rounded p-3 mt-4">
+                    <div className="d-flex flex-wrap align-items-center justify-content-between gap-3">
+                      <div>
+                        <div className="fw-semibold">Complete Lehr Register Backup</div>
+                        <small className="text-body-secondary">
+                          Includes A Verified SQLite Snapshot, Every PDF, A Manifest,
+                          And Restore Instructions.
+                        </small>
+                      </div>
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        disabled={backupRunning}
+                        onClick={() => void startBackup()}
+                      >
+                        <i className="bi bi-database-down me-2" />
+                        Create And Download Backup
+                      </button>
+                    </div>
+
+                    {backupJob && backupRunning && (
+                      <div className="mt-4" aria-live="polite">
+                        <div className="d-flex justify-content-between gap-3 mb-2">
+                          <span className="fw-semibold">
+                            {backupStageLabel(backupJob.stage)}
+                          </span>
+                          <div className="d-flex gap-2">
+                            {backupJob.status === "READY" &&
+                              backupDownloadStartedRef.current === backupJob.id && (
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  type="button"
+                                  onClick={() => beginBackupDownload(backupJob)}
+                                >
+                                  Download Now
+                                </button>
+                              )}
+                            <button
+                              className="btn btn-outline-secondary btn-sm"
+                              type="button"
+                              onClick={() => void cancelBackup()}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          className="progress"
+                          role="progressbar"
+                          aria-label="Backup Progress"
+                          aria-valuenow={backupStageProgress(backupJob.stage)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                        >
+                          <div
+                            className="progress-bar progress-bar-striped progress-bar-animated"
+                            style={{
+                              width: String(backupStageProgress(backupJob.stage)) + "%",
+                            }}
+                          />
+                        </div>
+                        <small className="text-body-secondary d-block mt-2">
+                          Please Keep This Page Open. Normal Reads Remain Available.
+                        </small>
+                      </div>
+                    )}
+
+                    {backupJob?.status === "COMPLETE" && (
+                      <div className="alert alert-success mt-3 mb-0" role="status">
+                        <i className="bi bi-check-circle-fill me-2" />
+                        <strong>Backup Complete.</strong> {backupJob.fileName} ·{" "}
+                        {formatBytes(backupJob.byteSize)} · {backupJob.pdfCount} PDFs
+                      </div>
+                    )}
+                    {backupJob?.status === "CANCELLED" && (
+                      <div className="alert alert-secondary mt-3 mb-0" role="status">
+                        Backup Cancelled. No Register Data Was Changed.
+                      </div>
+                    )}
+                    {backupJob?.status === "FAILED" && (
+                      <div className="alert alert-danger mt-3 mb-0" role="alert">
+                        <strong>Backup Failed.</strong>{" "}
+                        {backupJob.error || "The Backup Could Not Be Created."}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="alert alert-light border mt-3 mb-4">
+                    <i className="bi bi-folder2-open me-2" />
+                    On Windows, move the downloaded ZIP into your{" "}
+                    <strong>Documents\Lehr Register Backups</strong> folder. Full backup
+                    ZIPs are removed from the server after a successful download.
+                  </div>
+
+                  <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+                    <h5 className="mb-0">Recent Backup Attempts</h5>
+                    <span className="text-body-secondary small">Pacific Time</span>
+                  </div>
+                  {backupOverview?.history.length ? (
+                    <div className="table-responsive">
+                      <table className="table table-sm align-middle mb-0 backup-history-table">
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Status</th>
+                            <th>File</th>
+                            <th className="text-end">Size</th>
+                            <th className="text-end">PDFs</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {backupOverview.history.map((attempt) => (
+                            <tr key={attempt.id}>
+                              <td>{formatBackupDate(attempt.finishedAt)}</td>
+                              <td>
+                                <span
+                                  className={
+                                    "badge " +
+                                    (attempt.status === "SUCCESS"
+                                      ? "text-bg-success"
+                                      : attempt.status === "FAILED"
+                                        ? "text-bg-danger"
+                                        : "text-bg-secondary")
+                                  }
+                                >
+                                  {attempt.status === "SUCCESS"
+                                    ? "Completed"
+                                    : attempt.status === "FAILED"
+                                      ? "Failed"
+                                      : "Cancelled"}
+                                </span>
+                              </td>
+                              <td className="text-break">
+                                {attempt.fileName || "—"}
+                                {attempt.error && (
+                                  <small className="d-block text-danger">
+                                    {attempt.error}
+                                  </small>
+                                )}
+                              </td>
+                              <td className="text-end">{formatBytes(attempt.byteSize)}</td>
+                              <td className="text-end">{attempt.pdfCount}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-body-secondary border rounded p-3">
+                      No Backup Attempts Have Been Recorded Yet.
+                    </div>
+                  )}
+
+                  <div className="border-top mt-4 pt-3 text-body-secondary small">
+                    <i className="bi bi-shield-check me-2" />
+                    Downloads Are Unencrypted In This First Stage. Keep Them On Your
+                    Private, Password-Protected Windows Computer. In-App Restore And
+                    Automatic Off-Server Backups Are Planned Future Stages.
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="card card-outline card-primary shadow-sm">

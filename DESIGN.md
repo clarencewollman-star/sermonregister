@@ -281,7 +281,15 @@ sermon-register/
 - Upload to a temporary file, calculate the hash, then move it into place and commit its metadata. Compensate cleanly if either filesystem or database work fails.
 - Downloads use an authorization check and safe `Content-Disposition` headers.
 - A backup is not complete unless it contains a transactionally consistent SQLite snapshot and all uploaded files.
-- Automate dated backups, retain multiple generations, and periodically test restoration on another directory/machine.
+- Version 0.14.0 adds a manual full-backup workflow under **Settings → Backup And Restore**. The browser downloads one standard ZIP containing `sermon-register.db`, the exact `uploads/` layout, `manifest.json`, and `RESTORE.txt`. The server's internal `backups/` directory is deliberately excluded.
+- Before packaging, the server runs SQLite `quick_check`, creates an online SQLite snapshot, pins the immutable PDF files on the same data volume, and verifies every recorded PDF's size and SHA-256 hash. A validation or free-space failure stops the backup without changing register data.
+- Backup filenames use Pacific Time and the application version: `lehr-register-backup-YYYY-MM-DD-HHMM-vX.Y.Z.zip`. ZIP64 and balanced compression support large archives without loading them fully into memory.
+- Only one backup job may run at a time. Data writes pause briefly while the stable snapshot is created; reads remain available and compression continues after the pause. A running job exposes named stages and may be cancelled safely.
+- A completed full-backup ZIP is removed from the server after it is sent to the browser. Interrupted, cancelled, expired, and startup-stale temporary files are cleaned from `backups/.temporary/`. Pre-import and pre-migration SQLite safety copies remain separate.
+- The application stores only operational backup metadata: the five most recent attempts and the last successful completed download. The Settings indicator is quiet: amber when no backup exists or after 14 days, red after 30 days, and absent while current.
+- Manual backups are initially unencrypted and should be kept on the owner's private, password-protected Windows computer. The same backup engine and versioned manifest must be reusable by a future scheduled off-server process.
+- The backup format is restore-ready, but the first stage is download-only. A user-facing Restore action must not ship until a downloaded archive has been restored and verified in an isolated test environment. Restore may target the same or a newer compatible application version, never an older one.
+- Retain multiple generations and periodically test restoration on another directory/machine.
 - Keep encryption keys and passwords outside the repository. Full-disk or backup encryption is recommended for private material.
 
 ## Private access and security
@@ -368,7 +376,9 @@ Preparation now is limited to clean relational data, stable IDs, attachment meta
 
 - Complete the chosen local authentication method.
 - Deploy one instance to the owner's server behind private HTTPS access.
-- Automate database-plus-upload backups and complete a documented restore test.
+- Ship the validated manual database-plus-upload download in version 0.14.0.
+- Complete a documented isolated restore test, then add the guarded in-app Restore workflow.
+- Add a scheduled off-server destination using the same backup engine and archive format.
 - Add update, migration, and troubleshooting instructions for a non-expert maintainer.
 
 ### Stage 7 — future retrieval preparation
@@ -386,7 +396,10 @@ These are intentionally unresolved; none requires redesigning the core schema un
 4. **Song identity:** the Title, including any number, is the user-facing identity. If multiple hymnals later require otherwise identical titles, add a `hymnals` table and distinguish them in the selector.
 5. **Attachment import:** PDF source naming and matching rules remain unknown.
 6. **Deletion policy:** unused Texts may be permanently deleted, while referenced Texts are restricted. Confirm the permanent-deletion and audit rules for the other reusable master records.
-7. **Server platform:** operating system, domain, TLS method, and backup destination remain deployment choices.
+7. **Server platform:** operating system, domain, and TLS method remain deployment choices.
+8. **Backup retention:** the number of biweekly and annual Windows copies remains the owner's decision.
+9. **Backup encryption:** version 0.14.0 downloads are unencrypted. Decide whether future protection will use Windows Device Encryption/BitLocker, encrypted archives, or destination-level encryption.
+10. **Automatic destination:** a second physical machine or NAS at another location is preferred, but the device and transfer method remain open.
 
 ## Explicitly out of scope for the first release
 
