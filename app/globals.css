@@ -1074,6 +1074,41 @@ button.nav-link {
   margin-top: 0.35rem !important;
 }
 
+.text-change-preview,
+.text-change-choices {
+  font-size: 0.9rem;
+}
+
+.text-merge-modal {
+  z-index: 1090;
+}
+
+.text-merge-modal .modal-content {
+  max-height: calc(100dvh - 2rem);
+  overflow: hidden;
+}
+
+.text-merge-modal .modal-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.merge-choice-card {
+  cursor: pointer;
+  background: var(--bs-body-bg);
+}
+
+.merge-choice-card:has(input:checked) {
+  border-color: var(--bs-primary) !important;
+  box-shadow: 0 0 0 0.12rem color-mix(in srgb, var(--bs-primary) 20%, transparent);
+}
+
+.merge-choice-value {
+  max-height: 10rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .service-text-tags .tag-badge-button,
 .text-tags-cell .tag-badge-button,
 .mobile-text-list .tag-badge-button {
@@ -1131,5 +1166,24 @@ button.nav-link {
 
   .library-editor-modal .modal-footer {
     gap: 0.5rem;
+  }
+
+  .text-merge-modal {
+    padding: 0 !important;
+  }
+
+  .text-merge-modal .modal-dialog {
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    margin: 0;
+    align-items: stretch;
+  }
+
+  .text-merge-modal .modal-content {
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
   }
 }

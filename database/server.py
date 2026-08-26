@@ -510,6 +510,237 @@ def text_rows(con):
     return rows
 
 
+TEXT_DETAIL_FIELDS = (
+    ("description", "description"),
+    ("scriptureReference", "scripture_reference"),
+    ("songsForText", "songs_for_text"),
+    ("notes", "notes"),
+)
+
+
+def text_content_labels(con, text_id):
+    row = con.execute(
+        """SELECT description, scripture_reference, songs_for_text, notes
+             FROM texts WHERE id = ?""",
+        (text_id,),
+    ).fetchone()
+    if not row:
+        return []
+    labels = []
+    if str(row["description"] or "").strip():
+        labels.append("Description")
+    if str(row["scripture_reference"] or "").strip():
+        labels.append("Scripture Reference")
+    if str(row["songs_for_text"] or "").strip():
+        labels.append("Songs For This Sermon")
+    if str(row["notes"] or "").strip():
+        labels.append("Notes")
+    tag_count = con.execute(
+        "SELECT COUNT(*) FROM text_tags WHERE text_id = ?", (text_id,)
+    ).fetchone()[0]
+    attachment_count = con.execute(
+        "SELECT COUNT(*) FROM text_attachments WHERE text_id = ?", (text_id,)
+    ).fetchone()[0]
+    if tag_count:
+        labels.append(f"{tag_count} Tag" if tag_count == 1 else f"{tag_count} Tags")
+    if attachment_count:
+        labels.append(
+            f"{attachment_count} PDF" if attachment_count == 1
+            else f"{attachment_count} PDFs"
+        )
+    return labels
+
+
+def delete_text_if_empty_unused(con, text_id):
+    if not text_id or text_content_labels(con, text_id):
+        return False
+    service_count = con.execute(
+        "SELECT COUNT(*) FROM services WHERE text_id = ?", (text_id,)
+    ).fetchone()[0]
+    progress_count = con.execute(
+        "SELECT COUNT(*) FROM lehr_progress WHERE text_id = ?", (text_id,)
+    ).fetchone()[0]
+    if service_count or progress_count:
+        return False
+    deleted = con.execute("DELETE FROM texts WHERE id = ?", (text_id,))
+    return bool(deleted.rowcount)
+
+
+def text_merge_conflicts(source, target):
+    conflicts = []
+    for api_name, column_name in TEXT_DETAIL_FIELDS:
+        source_value = str(source[column_name] or "").strip()
+        target_value = str(target[column_name] or "").strip()
+        if source_value and target_value and source_value != target_value:
+            conflicts.append(api_name)
+    return conflicts
+
+
+def merged_text_value(source, target, api_name, column_name, choices):
+    source_value = str(source[column_name] or "").strip()
+    target_value = str(target[column_name] or "").strip()
+    if not source_value:
+        return target_value or None
+    if not target_value or source_value == target_value:
+        return source_value
+    choice = str(choices.get(api_name, "")).strip().upper()
+    if choice == "SOURCE":
+        return source_value
+    if choice == "TARGET":
+        return target_value
+    raise ValueError(f"Choose Which {api_name} To Keep Before Merging")
+
+
+def merge_text_records(con, source_id, target_id, source_values, choices):
+    source = con.execute("SELECT * FROM texts WHERE id = ?", (source_id,)).fetchone()
+    target = con.execute("SELECT * FROM texts WHERE id = ?", (target_id,)).fetchone()
+    if not source or not target:
+        raise ValueError("Both Text Records Are Required For A Merge")
+    if source_id == target_id:
+        raise ValueError("A Text Cannot Be Merged Into Itself")
+
+    source_for_merge = dict(source)
+    for api_name, column_name in TEXT_DETAIL_FIELDS:
+        if api_name in source_values:
+            source_for_merge[column_name] = str(source_values.get(api_name) or "").strip() or None
+    resolved = {
+        column_name: merged_text_value(
+            source_for_merge, target, api_name, column_name, choices
+        )
+        for api_name, column_name in TEXT_DETAIL_FIELDS
+    }
+    stamp = now()
+    con.execute("UPDATE services SET text_id = ?, updated_at = ? WHERE text_id = ?", (
+        target_id, stamp, source_id
+    ))
+    con.execute("UPDATE lehr_progress SET text_id = ?, updated_at = ? WHERE text_id = ?", (
+        target_id, stamp, source_id
+    ))
+    con.execute("UPDATE text_attachments SET text_id = ? WHERE text_id = ?", (
+        target_id, source_id
+    ))
+    con.execute(
+        """INSERT OR IGNORE INTO text_tags(text_id, tag_id, created_at)
+           SELECT ?, tag_id, created_at FROM text_tags WHERE text_id = ?""",
+        (target_id, source_id),
+    )
+    con.execute(
+        """UPDATE texts
+              SET description = ?, scripture_reference = ?, songs_for_text = ?,
+                  notes = ?, updated_at = ?
+            WHERE id = ?""",
+        (
+            resolved["description"],
+            resolved["scripture_reference"],
+            resolved["songs_for_text"],
+            resolved["notes"],
+            stamp,
+            target_id,
+        ),
+    )
+    con.execute("DELETE FROM texts WHERE id = ?", (source_id,))
+    return target_id
+
+
+class ApiError(Exception):
+    def __init__(self, message, status=400, code=None, **details):
+        super().__init__(message)
+        self.status = status
+        self.payload = {"error": message, **details}
+        if code:
+            self.payload["code"] = code
+
+
+def resolve_service_text_update(con, existing, body):
+    old_text_id = existing["text_id"]
+    current_text_id = str(body.get("currentTextId", "")).strip()
+    if current_text_id and current_text_id != old_text_id:
+        raise ApiError(
+            "This Service Changed Since It Was Opened. Close It And Try Again.",
+            409,
+            "STALE_TEXT",
+        )
+    requested_text = str(body.get("text", "")).strip()
+    text_action = str(body.get("textAction", "AUTO")).strip().upper()
+    text_result = "UNCHANGED"
+    affected_service_count = 1
+
+    if text_action in ("", "AUTO"):
+        text_id = master_id(con, "texts", "text", requested_text)
+        text_result = "RELINKED" if text_id != old_text_id else "UNCHANGED"
+    elif text_action == "KEEP":
+        text_id = old_text_id
+        current_text = con.execute(
+            "SELECT text FROM texts WHERE id = ?", (old_text_id,)
+        ).fetchone()
+        if not current_text or requested_text != current_text["text"]:
+            raise ApiError("The Text Name Changed Without A Text Action")
+    elif text_action == "RENAME":
+        current_text = con.execute(
+            "SELECT text FROM texts WHERE id = ?", (old_text_id,)
+        ).fetchone()
+        if not current_text:
+            raise ApiError("Current Text Not Found", 404)
+        duplicate = con.execute(
+            """SELECT id FROM texts
+                WHERE text = ? COLLATE NOCASE AND id <> ?""",
+            (requested_text, old_text_id),
+        ).fetchone()
+        if duplicate:
+            raise ApiError(
+                "This Text Already Exists",
+                409,
+                "TEXT_EXISTS",
+                targetId=duplicate["id"],
+            )
+        affected_service_count = con.execute(
+            "SELECT COUNT(*) FROM services WHERE text_id = ?", (old_text_id,)
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE texts SET text = ?, updated_at = ? WHERE id = ?",
+            (requested_text, now(), old_text_id),
+        )
+        text_id = old_text_id
+        text_result = "RENAMED" if requested_text != current_text["text"] else "UNCHANGED"
+    elif text_action == "RELINK":
+        target_text_id = str(body.get("targetTextId", "")).strip()
+        target_text = con.execute(
+            "SELECT id FROM texts WHERE id = ?", (target_text_id,)
+        ).fetchone()
+        if not target_text:
+            raise ApiError("Selected Text Not Found", 404)
+        text_id = target_text["id"]
+        text_result = "RELINKED" if text_id != old_text_id else "UNCHANGED"
+    elif text_action == "CREATE":
+        duplicate = con.execute(
+            "SELECT id FROM texts WHERE text = ? COLLATE NOCASE", (requested_text,)
+        ).fetchone()
+        if duplicate:
+            raise ApiError(
+                "This Text Already Exists",
+                409,
+                "TEXT_EXISTS",
+                targetId=duplicate["id"],
+            )
+        text_id = str(uuid.uuid4())
+        text_stamp = now()
+        con.execute(
+            """INSERT INTO texts(id, text, created_at, updated_at)
+               VALUES (?, ?, ?, ?)""",
+            (text_id, requested_text, text_stamp, text_stamp),
+        )
+        text_result = "CREATED"
+    else:
+        raise ApiError("Invalid Text Action")
+
+    return {
+        "old_text_id": old_text_id,
+        "text_id": text_id,
+        "text_result": text_result,
+        "affected_service_count": affected_service_count,
+    }
+
+
 def people_rows(con):
     return [
         dict(row)
@@ -2091,17 +2322,63 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"error": "Text record and Text are required"}, 400)
             with connect() as con:
                 existing = con.execute(
-                    "SELECT id FROM texts WHERE id = ?", (text_id,)
+                    "SELECT * FROM texts WHERE id = ?", (text_id,)
                 ).fetchone()
                 if not existing:
                     return self.json({"error": "Text not found"}, 404)
                 duplicate = con.execute(
-                    """SELECT id FROM texts
+                    """SELECT * FROM texts
                         WHERE text = ? COLLATE NOCASE AND id <> ?""",
                     (text, text_id),
                 ).fetchone()
                 if duplicate:
-                    return self.json({"error": "This Text already exists"}, 409)
+                    merge_source = dict(existing)
+                    for api_name, column_name in TEXT_DETAIL_FIELDS:
+                        if api_name in body:
+                            merge_source[column_name] = (
+                                str(body.get(api_name) or "").strip() or None
+                            )
+                    conflicts = text_merge_conflicts(merge_source, duplicate)
+                    merge_target_id = str(body.get("mergeTargetId", "")).strip()
+                    if merge_target_id != duplicate["id"]:
+                        return self.json(
+                            {
+                                "error": "This Text Already Exists",
+                                "code": "TEXT_EXISTS",
+                                "targetId": duplicate["id"],
+                                "conflicts": conflicts,
+                            },
+                            409,
+                        )
+                    choices = body.get("mergeChoices", {})
+                    if not isinstance(choices, dict):
+                        choices = {}
+                    missing_choices = [
+                        field for field in conflicts
+                        if str(choices.get(field, "")).strip().upper()
+                        not in ("SOURCE", "TARGET")
+                    ]
+                    if missing_choices:
+                        return self.json(
+                            {
+                                "error": "Choose Which Information To Keep Before Merging",
+                                "code": "MERGE_CHOICES_REQUIRED",
+                                "targetId": duplicate["id"],
+                                "conflicts": missing_choices,
+                            },
+                            409,
+                        )
+                    target_id = merge_text_records(
+                        con, text_id, duplicate["id"], body, choices
+                    )
+                    con.commit()
+                    record = next(row for row in text_rows(con) if row["id"] == target_id)
+                    record["text_action"] = "MERGED"
+                    record["merged_from_id"] = text_id
+                    return self.json(record)
+                affected_services = con.execute(
+                    "SELECT COUNT(*) FROM services WHERE text_id = ?", (text_id,)
+                ).fetchone()[0]
                 con.execute(
                     """UPDATE texts
                           SET text = ?, description = ?,
@@ -2121,6 +2398,10 @@ class Handler(BaseHTTPRequestHandler):
                 sync_text_tags(con, text_id, body.get("tags", []))
                 con.commit()
                 record = next(row for row in text_rows(con) if row["id"] == text_id)
+                record["text_action"] = (
+                    "RENAMED" if text != existing["text"] else "UPDATED"
+                )
+                record["affected_service_count"] = affected_services
                 self.json(record)
         except Exception as exc:
             self.json({"error": str(exc)}, 500)
@@ -2518,7 +2799,12 @@ class Handler(BaseHTTPRequestHandler):
                 song_by = optional_master_id(
                     con, "people", "name", body.get("songBy")
                 )
-                text_id = master_id(con, "texts", "text", body["text"].strip())
+                text_change = resolve_service_text_update(con, existing, body)
+                old_text_id = text_change["old_text_id"]
+                text_id = text_change["text_id"]
+                text_result = text_change["text_result"]
+                affected_service_count = text_change["affected_service_count"]
+                removed_old_text = False
                 text_by = optional_master_id(
                     con, "people", "name", body.get("textBy")
                 )
@@ -2536,11 +2822,13 @@ class Handler(BaseHTTPRequestHandler):
                             )
                     lehr_status = str(body.get("status", "")).strip() or None
                     if lehr_status not in (None, "IN_PROGRESS", "FINISHED"):
+                        con.rollback()
                         return self.json({"error": "Invalid Lehr status"}, 400)
                     progress_intent = str(
                         body.get("progressIntent", "START")
                     ).strip().upper()
                     if progress_intent not in ("START", "CONTINUE"):
+                        con.rollback()
                         return self.json({"error": "Invalid Lehr progress choice"}, 400)
                 else:
                     progress_intent = "AUTO"
@@ -2577,8 +2865,14 @@ class Handler(BaseHTTPRequestHandler):
                     (
                         existing["service_type"] != body["type"]
                         or existing["service_date"] != body["date"]
-                        or existing["text_id"] != text_id
                         or (
+                            (as_bool(body.get("statusChanged"))
+                             or as_bool(body.get("progressChanged")))
+                            and existing["text_id"] != text_id
+                        )
+                        or (
+                            as_bool(body.get("progressChanged"))
+                            and
                             body["type"] == "LEHR"
                             and existing["progress_intent"] not in (None, progress_intent)
                         )
@@ -2595,9 +2889,16 @@ class Handler(BaseHTTPRequestHandler):
                         "UPDATE services SET lehr_status = NULL WHERE id = ?",
                         (body["id"],),
                     )
+                if text_id != old_text_id:
+                    removed_old_text = delete_text_if_empty_unused(con, old_text_id)
                 con.commit()
                 record = next(row for row in service_rows(con) if row["id"] == body["id"])
+                record["text_action"] = text_result
+                record["affected_service_count"] = affected_service_count
+                record["removed_old_text"] = removed_old_text
                 self.json(record)
+        except ApiError as exc:
+            self.json(exc.payload, exc.status)
         except ValueError as exc:
             self.json({"error": str(exc)}, 400)
         except Exception as exc:
@@ -2694,7 +2995,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"error": "Service id is required"}, 400)
             with connect() as con:
                 service = con.execute(
-                    "SELECT service_type FROM services WHERE id = ?", (service_id,)
+                    "SELECT service_type, text_id FROM services WHERE id = ?", (service_id,)
                 ).fetchone()
                 membership = con.execute(
                     """SELECT member.progress_id, progress.start_service_id,
@@ -2740,8 +3041,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 if not deleted.rowcount:
                     return self.json({"error": "Service not found"}, 404)
+                removed_text = delete_text_if_empty_unused(
+                    con, service["text_id"] if service else None
+                )
                 con.commit()
-                self.json({"id": service_id})
+                self.json({"id": service_id, "removed_text": removed_text})
         except Exception as exc:
             self.json({"error": str(exc)}, 500)
 

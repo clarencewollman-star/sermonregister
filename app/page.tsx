@@ -22,6 +22,7 @@ type Service = {
   type: "Lehr" | "Gebet";
   song: string;
   songBy: string;
+  textId: string;
   text: string;
   textTags: TagRecord[];
   textTagIds: string[];
@@ -54,6 +55,7 @@ type ApiService = {
   service_type: "LEHR" | "GEBET";
   song: string | null;
   song_by: string | null;
+  text_id: string;
   text_title: string;
   text_tag_records: ApiTagRecord[];
   text_tags: string;
@@ -80,6 +82,9 @@ type ApiService = {
     | null;
   progress_history: ProgressHistoryItem[];
   notes: string | null;
+  text_action?: "UNCHANGED" | "RENAMED" | "RELINKED" | "CREATED";
+  affected_service_count?: number;
+  removed_old_text?: boolean;
 };
 
 type Song = {
@@ -143,6 +148,34 @@ type ApiTextRecord = {
   service_count: number;
   last_used: string | null;
   attachment_count: number;
+  text_action?: "UPDATED" | "RENAMED" | "MERGED";
+  affected_service_count?: number;
+  merged_from_id?: string;
+};
+
+type TextPayload = {
+  text: string;
+  description: string;
+  tags: string[];
+  scriptureReference: string;
+  songsForText: string;
+  notes: string;
+};
+
+type TextMergeField = "description" | "scriptureReference" | "songsForText" | "notes";
+
+type TextMergeRequest = {
+  source: TextRecord;
+  target: TextRecord;
+  payload: TextPayload;
+  conflicts: TextMergeField[];
+};
+
+const textMergeFieldLabels: Record<TextMergeField, string> = {
+  description: "Description",
+  scriptureReference: "Scripture Reference",
+  songsForText: "Songs For This Sermon",
+  notes: "Notes",
 };
 
 type TagRecord = {
@@ -342,6 +375,7 @@ const fromApi = (row: ApiService): Service => {
     type: row.service_type === "LEHR" ? "Lehr" : "Gebet",
     song: row.song || "",
     songBy: row.song_by || "",
+    textId: row.text_id,
     text: row.text_title,
     textTags: (row.text_tag_records || []).map(tagFromApi),
     textTagIds: (row.text_tag_records || []).map((tag) => tag.id),
@@ -631,17 +665,18 @@ function TagPicker({
 function TextChoiceInput({
   id,
   name,
-  defaultValue,
+  value,
   choices,
+  onChange,
   required = false,
 }: {
   id: string;
   name: string;
-  defaultValue: string;
+  value: string;
   choices: TextRecord[];
+  onChange: (value: string, selectedId: string) => void;
   required?: boolean;
 }) {
-  const [value, setValue] = useState(defaultValue);
   const [focused, setFocused] = useState(false);
   const query = value.trim().toLowerCase();
   const suggestions = choices
@@ -671,7 +706,12 @@ function TextChoiceInput({
         required={required}
         onFocus={() => setFocused(true)}
         onChange={(event) => {
-          setValue(event.target.value);
+          const nextValue = event.target.value;
+          const exact = choices.find(
+            (record) =>
+              record.text.localeCompare(nextValue, undefined, { sensitivity: "base" }) === 0,
+          );
+          onChange(nextValue, exact?.id || "");
           setFocused(true);
         }}
         onKeyDown={(event) => {
@@ -692,7 +732,7 @@ function TextChoiceInput({
               aria-selected={record.text === value}
               key={record.id}
               onClick={() => {
-                setValue(record.text);
+                onChange(record.text, record.id);
                 setFocused(false);
               }}
             >
@@ -933,9 +973,13 @@ export default function Home() {
   const [editCompleted, setEditCompleted] = useState(false);
   const [editStatusChanged, setEditStatusChanged] = useState(false);
   const [editProgressChanged, setEditProgressChanged] = useState(false);
+  const [editTextValue, setEditTextValue] = useState("");
+  const [editTextSelectedId, setEditTextSelectedId] = useState("");
+  const [editCreateSeparateText, setEditCreateSeparateText] = useState(false);
   const [selected, setSelected] = useState<Service | null>(null);
   const [rowVersion, setRowVersion] = useState(0);
   const [saveError, setSaveError] = useState("");
+  const [saveNotice, setSaveNotice] = useState("");
   const [draft, setDraft] = useState(blankDraft);
   const [inlineMatch, setInlineMatch] = useState<ProgressMatch | null>(null);
   const [songs, setSongs] = useState<Song[]>([]);
@@ -962,6 +1006,10 @@ export default function Home() {
   const textAutoSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const textAutoSaveFailed = useRef(false);
   const textFormRef = useRef<HTMLFormElement>(null);
+  const [textMergeRequest, setTextMergeRequest] = useState<TextMergeRequest | null>(null);
+  const [textMergeChoices, setTextMergeChoices] = useState<
+    Partial<Record<TextMergeField, "SOURCE" | "TARGET">>
+  >({});
   const [textAttachments, setTextAttachments] = useState<TextAttachment[]>([]);
   const [pdfUploading, setPdfUploading] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
@@ -1302,6 +1350,43 @@ export default function Home() {
     [texts],
   );
 
+  const editTextDecision = useMemo(() => {
+    if (!selected) {
+      return {
+        action: "KEEP" as const,
+        target: null as TextRecord | null,
+        source: null as TextRecord | null,
+        changed: false,
+        showChoices: false,
+      };
+    }
+    const source = texts.find((record) => record.id === selected.textId) || null;
+    const changed = editTextValue !== selected.text;
+    const exact =
+      texts.find((record) => record.id === editTextSelectedId) ||
+      texts.find(
+        (record) =>
+          record.text.localeCompare(editTextValue, undefined, { sensitivity: "base" }) === 0,
+      ) ||
+      null;
+    if (!changed) {
+      return { action: "KEEP" as const, target: source, source, changed, showChoices: false };
+    }
+    if (exact && exact.id !== selected.textId) {
+      return { action: "RELINK" as const, target: exact, source, changed, showChoices: false };
+    }
+    if (exact?.id === selected.textId) {
+      return { action: "RENAME" as const, target: source, source, changed, showChoices: false };
+    }
+    return {
+      action: editCreateSeparateText ? ("CREATE" as const) : ("RENAME" as const),
+      target: null,
+      source,
+      changed,
+      showChoices: true,
+    };
+  }, [editCreateSeparateText, editTextSelectedId, editTextValue, selected, texts]);
+
   const textDescriptionsByTitle = useMemo(
     () => new Map(texts.map((record) => [record.text, record.description])),
     [texts],
@@ -1443,6 +1528,7 @@ export default function Home() {
 
   async function createService(payload: Record<string, string>) {
     setSaveError("");
+    setSaveNotice("");
     const response = await fetch(apiUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1451,6 +1537,7 @@ export default function Home() {
     const result = (await response.json()) as ApiService & { error?: string };
     if (!response.ok) throw new Error(result.error || "Could Not Save Service");
     await refreshServices();
+    setSaveNotice("Service Saved");
     void refreshSongs().catch(() => setSongError("The Songs Could Not Be Refreshed."));
     void refreshTexts().catch(() => setTextError("The Texts Could Not Be Refreshed."));
     void refreshPeople().catch(() =>
@@ -1462,7 +1549,22 @@ export default function Home() {
     event.preventDefault();
     if (!selected || !editKind) return;
     const form = new FormData(event.currentTarget);
+    if (!editTextValue.trim()) {
+      setSaveError("Text Is Required.");
+      return;
+    }
+    if (
+      editTextDecision.action === "RENAME" &&
+      editTextDecision.source &&
+      editTextDecision.source.serviceCount > 1 &&
+      !window.confirm(
+        `Rename This Text In ${editTextDecision.source.serviceCount} Services?`,
+      )
+    ) {
+      return;
+    }
     setSaveError("");
+    setSaveNotice("");
     try {
       const response = await fetch(apiUrl(), {
         method: "PUT",
@@ -1473,7 +1575,11 @@ export default function Home() {
           type: editKind.toUpperCase(),
           song: String(form.get("editSong")),
           songBy: String(form.get("editSongBy")),
-          text: String(form.get("editText")),
+          text: editTextValue,
+          currentTextId: selected.textId,
+          textAction: editTextDecision.action,
+          targetTextId:
+            editTextDecision.action === "RELINK" ? editTextDecision.target?.id || "" : "",
           textBy: String(form.get("editTextBy")),
           vorrade: String(form.get("editVorrade") || ""),
           vorradeBy: String(form.get("editVorradeBy") || ""),
@@ -1488,9 +1594,21 @@ export default function Home() {
       const result = (await response.json()) as ApiService & { error?: string };
       if (!response.ok) throw new Error(result.error || "Could Not Update Service");
       await refreshServices();
+      await refreshTexts();
+      const resultMessages: Record<string, string> = {
+        RENAMED: `Service Saved — Text Renamed In ${result.affected_service_count || 1} ${
+          Number(result.affected_service_count || 1) === 1 ? "Service" : "Services"
+        }`,
+        RELINKED: "Service Saved — Linked To Existing Text",
+        CREATED: "Service Saved — New Separate Text Created",
+        UNCHANGED: "Service Saved",
+      };
+      setSaveNotice(resultMessages[result.text_action || "UNCHANGED"] || "Service Saved");
+      if (result.removed_old_text) {
+        setSaveNotice((message) => `${message} — Empty Unused Text Removed`);
+      }
       setSelected(null);
       void refreshSongs().catch(() => setSongError("The Songs Could Not Be Refreshed."));
-      void refreshTexts().catch(() => setTextError("The Texts Could Not Be Refreshed."));
       void refreshPeople().catch(() =>
         setSaveError("The People List Could Not Be Refreshed."),
       );
@@ -1503,18 +1621,28 @@ export default function Home() {
     if (!selected) return;
     if (!window.confirm("Delete This Service? This Cannot Be Undone.")) return;
     setSaveError("");
+    setSaveNotice("");
     try {
       const response = await fetch(apiUrl(), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: selected.id }),
       });
-      const result = (await response.json()) as { id?: string; error?: string };
+      const result = (await response.json()) as {
+        id?: string;
+        error?: string;
+        removed_text?: boolean;
+      };
       if (!response.ok) throw new Error(result.error || "Could Not Delete Service");
       await refreshServices();
+      await refreshTexts();
+      setSaveNotice(
+        result.removed_text
+          ? "Service Deleted — Empty Unused Text Removed"
+          : "Service Deleted",
+      );
       setSelected(null);
       void refreshSongs().catch(() => setSongError("The Songs Could Not Be Refreshed."));
-      void refreshTexts().catch(() => setTextError("The Texts Could Not Be Refreshed."));
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Could Not Delete Service");
     }
@@ -1681,6 +1809,8 @@ export default function Home() {
     setTextError("");
     setTextAutoSaveStatus("");
     textAutoSaveFailed.current = false;
+    setTextMergeRequest(null);
+    setTextMergeChoices({});
     setTextAttachments([]);
     setTextEditorTags(record.tagRecords);
     setTextEditor(record);
@@ -1699,6 +1829,43 @@ export default function Home() {
       setTextError("Text Is Required.");
       return;
     }
+    const titleChanged = payload.text !== textEditor.text;
+    if (titleChanged) {
+      const mergeTarget = texts.find(
+        (record) =>
+          record.id !== textEditor.id &&
+          record.text.localeCompare(payload.text, undefined, { sensitivity: "base" }) === 0,
+      );
+      if (mergeTarget) {
+        const conflicts = (
+          [
+            ["description", payload.description, mergeTarget.description],
+            ["scriptureReference", payload.scriptureReference, mergeTarget.scriptureReference],
+            ["songsForText", payload.songsForText, mergeTarget.songsForText],
+            ["notes", payload.notes, mergeTarget.notes],
+          ] as Array<[TextMergeField, string, string]>
+        )
+          .filter(([, sourceValue, targetValue]) => {
+            const source = sourceValue.trim();
+            const targetValueTrimmed = targetValue.trim();
+            return source && targetValueTrimmed && source !== targetValueTrimmed;
+          })
+          .map(([field]) => field);
+        setTextMergeChoices({});
+        setTextMergeRequest({ source: textEditor, target: mergeTarget, payload, conflicts });
+        setTextAutoSaveStatus("Waiting For Merge Confirmation");
+        return;
+      }
+      if (
+        textEditor.serviceCount > 1 &&
+        !window.confirm(`Rename This Text In ${textEditor.serviceCount} Services?`)
+      ) {
+        const titleInput = event.currentTarget.elements.namedItem("textText");
+        if (titleInput instanceof HTMLInputElement) titleInput.value = textEditor.text;
+        setTextAutoSaveStatus("Rename Cancelled");
+        return;
+      }
+    }
     const textId = textEditor.id;
     textAutoSaveQueue.current = textAutoSaveQueue.current.then(async () => {
       textAutoSaveFailed.current = false;
@@ -1714,18 +1881,92 @@ export default function Home() {
         if (!response.ok) throw new Error(result.error || "Could Not Save Text");
         const saved = textFromApi(result);
         setTextEditorTags(saved.tagRecords);
+        setTextEditor(saved);
         setTexts((current) =>
           current
             .map((record) => (record.id === saved.id ? saved : record))
             .sort((left, right) => left.text.localeCompare(right.text)),
         );
-        setTextAutoSaveStatus("Saved Automatically");
+        if (result.text_action === "RENAMED") await refreshServices();
+        setTextAutoSaveStatus(
+          result.text_action === "RENAMED"
+            ? `Saved Automatically — Renamed In ${result.affected_service_count || 1} ${
+                Number(result.affected_service_count || 1) === 1 ? "Service" : "Services"
+              }`
+            : "Saved Automatically",
+        );
       } catch (error) {
         textAutoSaveFailed.current = true;
         setTextError(error instanceof Error ? error.message : "Could Not Save Text");
         setTextAutoSaveStatus("Automatic Save Failed");
       }
     });
+  }
+
+  function cancelTextMerge() {
+    if (textMergeRequest && textFormRef.current) {
+      const titleInput = textFormRef.current.elements.namedItem("textText");
+      if (titleInput instanceof HTMLInputElement) {
+        titleInput.value = textMergeRequest.source.text;
+      }
+    }
+    setTextMergeRequest(null);
+    setTextMergeChoices({});
+    setTextAutoSaveStatus("Merge Cancelled");
+  }
+
+  async function mergeTexts() {
+    if (!textMergeRequest) return;
+    const missingChoice = textMergeRequest.conflicts.some(
+      (field) => !textMergeChoices[field],
+    );
+    if (missingChoice) {
+      setTextError("Choose Which Information To Keep For Every Conflict.");
+      return;
+    }
+    await textAutoSaveQueue.current;
+    if (textAutoSaveFailed.current) return;
+    setTextError("");
+    setTextAutoSaveStatus("Merging...");
+    try {
+      const response = await fetch(textsApiUrl(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: textMergeRequest.source.id,
+          ...textMergeRequest.payload,
+          mergeTargetId: textMergeRequest.target.id,
+          mergeChoices: textMergeChoices,
+        }),
+      });
+      const result = (await response.json()) as ApiTextRecord & { error?: string };
+      if (!response.ok) throw new Error(result.error || "Could Not Merge Texts");
+      const saved = textFromApi(result);
+      setTexts((current) =>
+        current
+          .filter(
+            (record) =>
+              record.id !== textMergeRequest.source.id && record.id !== saved.id,
+          )
+          .concat(saved)
+          .sort((left, right) => left.text.localeCompare(right.text)),
+      );
+      setTextEditor(saved);
+      setTextEditorTags(saved.tagRecords);
+      setTextMergeRequest(null);
+      setTextMergeChoices({});
+      await Promise.all([
+        refreshServices(),
+        refreshTags(),
+        loadTextAttachments(saved.id),
+      ]);
+      textAutoSaveFailed.current = false;
+      setTextAutoSaveStatus("Texts Merged — Information And History Preserved");
+    } catch (error) {
+      textAutoSaveFailed.current = true;
+      setTextError(error instanceof Error ? error.message : "Could Not Merge Texts");
+      setTextAutoSaveStatus("Merge Failed");
+    }
   }
 
   function changeTextEditorTags(next: TagRecord[]) {
@@ -1890,7 +2131,24 @@ export default function Home() {
 
   async function deleteText() {
     if (!textEditor || textEditor === "new" || textEditor.serviceCount > 0) return;
-    if (!window.confirm("Delete This Text? This Cannot Be Undone.")) return;
+    const contents = [
+      textEditor.description ? "Description" : "",
+      textEditor.scriptureReference ? "Scripture Reference" : "",
+      textEditor.songsForText ? "Songs For This Sermon" : "",
+      textEditor.notes ? "Notes" : "",
+      textEditor.tagRecords.length
+        ? `${textEditor.tagRecords.length} ${textEditor.tagRecords.length === 1 ? "Tag" : "Tags"}`
+        : "",
+      textAttachments.length
+        ? `${textAttachments.length} ${
+            textAttachments.length === 1 ? "PDF" : "PDFs"
+          }`
+        : "",
+    ].filter(Boolean);
+    const warning = contents.length
+      ? `Delete This Text? It Contains ${contents.join(", ")}. This Cannot Be Undone.`
+      : "Delete This Empty Text? This Cannot Be Undone.";
+    if (!window.confirm(warning)) return;
     await textAutoSaveQueue.current;
     if (textAutoSaveFailed.current) return;
     setTextError("");
@@ -2105,6 +2363,7 @@ export default function Home() {
 
   function openService(service: Service) {
     setSaveError("");
+    setSaveNotice("");
     setEditKind(service.type);
     setEditProgressIntent(
       service.type === "Lehr" && service.progressStartId !== service.id
@@ -2121,11 +2380,15 @@ export default function Home() {
     setEditCompleted(service.completionServiceId === service.id);
     setEditStatusChanged(false);
     setEditProgressChanged(false);
+    setEditTextValue(service.text);
+    setEditTextSelectedId(service.textId);
+    setEditCreateSeparateText(false);
     setSelected(service);
   }
 
   function startNew() {
     setActive("Register");
+    setSaveNotice("");
     clearInline();
     setKind("");
     if (mobile) {
@@ -2415,6 +2678,12 @@ export default function Home() {
                   <div className="alert alert-danger m-3 mb-0" role="alert">
                     <i className="bi bi-exclamation-triangle-fill me-2" />
                     {saveError}
+                  </div>
+                )}
+                {saveNotice && (
+                  <div className="alert alert-success m-3 mb-0" role="status">
+                    <i className="bi bi-check-circle-fill me-2" />
+                    {saveNotice}
                   </div>
                 )}
 
@@ -4125,10 +4394,79 @@ export default function Home() {
                       <TextChoiceInput
                         id="edit-service-text"
                         name="editText"
-                        defaultValue={selected.text}
+                        value={editTextValue}
                         choices={textChoices}
+                        onChange={(value, selectedId) => {
+                          setEditTextValue(value);
+                          setEditTextSelectedId(selectedId);
+                          setEditCreateSeparateText(false);
+                        }}
                         required
                       />
+                      {editTextDecision.changed && (
+                        <div
+                          className={`alert py-2 px-3 mt-2 mb-0 text-change-preview ${
+                            editTextDecision.action === "CREATE"
+                              ? "alert-warning"
+                              : editTextDecision.action === "RELINK"
+                                ? "alert-info"
+                                : "alert-primary"
+                          }`}
+                          role="status"
+                        >
+                          <i className="bi bi-info-circle-fill me-2" />
+                          {editTextDecision.action === "RELINK" && editTextDecision.target
+                            ? `This Service Will Use Existing Text “${editTextDecision.target.text}”.`
+                            : editTextDecision.action === "CREATE"
+                              ? "A New Separate Text Will Be Created For This Service."
+                              : `This Will Rename “${selected.text}” Everywhere — Used By ${
+                                  editTextDecision.source?.serviceCount || 1
+                                } ${
+                                  Number(editTextDecision.source?.serviceCount || 1) === 1
+                                    ? "Service"
+                                    : "Services"
+                                }.`}
+                        </div>
+                      )}
+                      {editTextDecision.showChoices && (
+                        <fieldset className="text-change-choices border rounded p-3 mt-2">
+                          <legend className="float-none w-auto px-1 mb-1 fs-6">
+                            How Should This New Name Be Used?
+                          </legend>
+                          <div className="form-check">
+                            <input
+                              className="form-check-input"
+                              id="edit-text-rename"
+                              name="editTextActionChoice"
+                              type="radio"
+                              checked={!editCreateSeparateText}
+                              onChange={() => setEditCreateSeparateText(false)}
+                            />
+                            <label className="form-check-label" htmlFor="edit-text-rename">
+                              <strong>Rename Current Text</strong>
+                              <span className="d-block text-body-secondary small">
+                                Preserves Its Information And Changes The Name Everywhere.
+                              </span>
+                            </label>
+                          </div>
+                          <div className="form-check mt-2">
+                            <input
+                              className="form-check-input"
+                              id="edit-text-create"
+                              name="editTextActionChoice"
+                              type="radio"
+                              checked={editCreateSeparateText}
+                              onChange={() => setEditCreateSeparateText(true)}
+                            />
+                            <label className="form-check-label" htmlFor="edit-text-create">
+                              <strong>Create New Text For This Service</strong>
+                              <span className="d-block text-body-secondary small">
+                                Keeps The Current Text As A Separate Record.
+                              </span>
+                            </label>
+                          </div>
+                        </fieldset>
+                      )}
                     </div>
                     <div className="col-md-6">
                       <label className="form-label" htmlFor="edit-service-text-by">
@@ -5018,6 +5356,125 @@ export default function Home() {
                   </div>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {textMergeRequest && (
+        <div
+          className="modal fade show d-block text-merge-modal"
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="text-merge-title"
+        >
+          <div className="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <div className="modal-content card card-warning card-outline mb-0">
+              <div className="modal-header">
+                <div>
+                  <small className="text-uppercase text-body-secondary">Safe Text Merge</small>
+                  <h5 className="modal-title" id="text-merge-title">
+                    Merge Into “{textMergeRequest.target.text}”?
+                  </h5>
+                </div>
+                <button
+                  className="btn-close"
+                  type="button"
+                  aria-label="Cancel Text Merge"
+                  onClick={cancelTextMerge}
+                />
+              </div>
+              <div className="modal-body">
+                <div className="alert alert-info">
+                  <i className="bi bi-shield-check me-2" />
+                  All Services, Lehr Progress, Tags, And PDFs From “
+                  {textMergeRequest.source.text}” Will Be Preserved In The Existing Text.
+                </div>
+                {textMergeRequest.conflicts.length ? (
+                  <div className="d-grid gap-3">
+                    <p className="mb-0">
+                      Both Texts Contain Different Information. Choose What To Keep For Each
+                      Field.
+                    </p>
+                    {textMergeRequest.conflicts.map((field) => (
+                      <fieldset className="border rounded p-3" key={field}>
+                        <legend className="float-none w-auto px-1 fs-6">
+                          {textMergeFieldLabels[field]}
+                        </legend>
+                        <div className="row g-3 merge-choice-row">
+                          <div className="col-12 col-lg-6">
+                            <label className="merge-choice-card d-block border rounded p-3 h-100">
+                              <span className="d-flex align-items-center gap-2 mb-2">
+                                <input
+                                  className="form-check-input mt-0"
+                                  type="radio"
+                                  name={`merge-${field}`}
+                                  checked={textMergeChoices[field] === "SOURCE"}
+                                  onChange={() =>
+                                    setTextMergeChoices((current) => ({
+                                      ...current,
+                                      [field]: "SOURCE",
+                                    }))
+                                  }
+                                />
+                                <strong>Keep From “{textMergeRequest.source.text}”</strong>
+                              </span>
+                              <span className="merge-choice-value d-block text-body-secondary">
+                                {textMergeRequest.payload[field]}
+                              </span>
+                            </label>
+                          </div>
+                          <div className="col-12 col-lg-6">
+                            <label className="merge-choice-card d-block border rounded p-3 h-100">
+                              <span className="d-flex align-items-center gap-2 mb-2">
+                                <input
+                                  className="form-check-input mt-0"
+                                  type="radio"
+                                  name={`merge-${field}`}
+                                  checked={textMergeChoices[field] === "TARGET"}
+                                  onChange={() =>
+                                    setTextMergeChoices((current) => ({
+                                      ...current,
+                                      [field]: "TARGET",
+                                    }))
+                                  }
+                                />
+                                <strong>Keep From “{textMergeRequest.target.text}”</strong>
+                              </span>
+                              <span className="merge-choice-value d-block text-body-secondary">
+                                {textMergeRequest.target[field]}
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      </fieldset>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="alert alert-success mb-0">
+                    <i className="bi bi-check-circle-fill me-2" />
+                    There Are No Conflicting Information Fields. Blank Fields Will Be Filled,
+                    And All Tags And PDFs Will Be Combined.
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-outline-secondary" type="button" onClick={cancelTextMerge}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={textMergeRequest.conflicts.some(
+                    (field) => !textMergeChoices[field],
+                  )}
+                  onClick={() => void mergeTexts()}
+                >
+                  <i className="bi bi-intersect me-1" />
+                  Merge Texts
+                </button>
+              </div>
             </div>
           </div>
         </div>

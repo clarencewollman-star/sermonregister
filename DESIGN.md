@@ -282,6 +282,9 @@ sermon-register/
 - Downloads use an authorization check and safe `Content-Disposition` headers.
 - A backup is not complete unless it contains a transactionally consistent SQLite snapshot and all uploaded files.
 - Version 0.14.0 adds a manual full-backup workflow under **Settings → Backup And Restore**. The browser downloads one standard ZIP containing `sermon-register.db`, the exact `uploads/` layout, `manifest.json`, and `RESTORE.txt`. The server's internal `backups/` directory is deliberately excluded.
+- Version 0.15.0 makes Text identity explicit when editing services. Renaming preserves the Text ID and all related content and history; selecting an existing Text relinks only the service; creating a separate Text requires an explicit choice. Text-only edits to saved services never create or recalculate Lehr progress.
+- Renaming a Text from the Text library into an existing name is a reviewed merge. Services, Lehr progress, tags, and PDFs move to the surviving record. Blank fields are filled automatically, while conflicting description, Scripture Reference, Songs For This Sermon, and Notes values require the user to choose which value survives.
+- Empty Text records are removed only when no service or Lehr progress references them and they contain no description, Scripture Reference, Songs For This Sermon, notes, tags, or PDFs. Manual deletion provides a stronger content-specific warning.
 - Before packaging, the server runs SQLite `quick_check`, creates an online SQLite snapshot, pins the immutable PDF files on the same data volume, and verifies every recorded PDF's size and SHA-256 hash. A validation or free-space failure stops the backup without changing register data.
 - Backup filenames use Pacific Time and the application version: `lehr-register-backup-YYYY-MM-DD-HHMM-vX.Y.Z.zip`. ZIP64 and balanced compression support large archives without loading them fully into memory.
 - Only one backup job may run at a time. Data writes pause briefly while the stable snapshot is created; reads remain available and compression continues after the pause. A running job exposes named stages and may be cancelled safely.
@@ -377,6 +380,7 @@ Preparation now is limited to clean relational data, stable IDs, attachment meta
 - Complete the chosen local authentication method.
 - Deploy one instance to the owner's server behind private HTTPS access.
 - Ship the validated manual database-plus-upload download in version 0.14.0.
+- Ship identity-aware Text rename, relink, merge, and safe cleanup behavior in version 0.15.0.
 - Complete a documented isolated restore test, then add the guarded in-app Restore workflow.
 - Add a scheduled off-server destination using the same backup engine and archive format.
 - Add update, migration, and troubleshooting instructions for a non-expert maintainer.
