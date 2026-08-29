@@ -283,6 +283,61 @@ class TextIdentityApiTest(unittest.TestCase):
         self.assertEqual(merged_service["text_id"], merge_target["id"])
         self.assertEqual(merged_service["progress_id"], source_service["progress_id"])
 
+    def test_times_used_counts_starts_and_legacy_unlinked_gebets(self):
+        lehr = self.create_service("Usage Lehr", "LEHR", "2026-01-01")
+        lehr_continuation = self.create_service(
+            "Usage Lehr", "GEBET", "2026-01-02"
+        )
+        self.assertEqual(lehr_continuation["progress_id"], lehr["progress_id"])
+
+        gebet_start = self.create_service(
+            "Usage Gebet Start", "GEBET", "2026-02-01"
+        )
+        gebet_continuation = self.create_service(
+            "Usage Gebet Start", "GEBET", "2026-02-02"
+        )
+        self.assertEqual(
+            gebet_continuation["progress_id"], gebet_start["progress_id"]
+        )
+
+        legacy_first = self.create_service(
+            "Usage Legacy Gebet", "GEBET", "2025-01-01"
+        )
+        legacy_second = self.create_service(
+            "Usage Legacy Gebet", "GEBET", "2025-06-01"
+        )
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "DELETE FROM lehr_progress_services WHERE service_id IN (?, ?)",
+                (legacy_first["id"], legacy_second["id"]),
+            )
+            connection.execute(
+                "DELETE FROM lehr_progress WHERE text_id = ?",
+                (legacy_first["text_id"],),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        mixed_gebet = self.create_service(
+            "Usage Mixed Starts", "GEBET", "2026-03-01"
+        )
+        mixed_lehr = self.create_service(
+            "Usage Mixed Starts", "LEHR", "2026-04-01"
+        )
+        self.assertNotEqual(mixed_gebet["progress_id"], mixed_lehr["progress_id"])
+
+        texts = {row["text"]: row for row in self.request("GET", "/texts")}
+        self.assertEqual(texts["Usage Lehr"]["times_used"], 1)
+        self.assertEqual(texts["Usage Lehr"]["last_used"], "2026-01-01")
+        self.assertEqual(texts["Usage Gebet Start"]["times_used"], 1)
+        self.assertEqual(texts["Usage Gebet Start"]["last_used"], "2026-02-01")
+        self.assertEqual(texts["Usage Legacy Gebet"]["times_used"], 2)
+        self.assertEqual(texts["Usage Legacy Gebet"]["last_used"], "2025-06-01")
+        self.assertEqual(texts["Usage Mixed Starts"]["times_used"], 2)
+        self.assertEqual(texts["Usage Mixed Starts"]["last_used"], "2026-04-01")
+
 
 if __name__ == "__main__":
     unittest.main()

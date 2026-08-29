@@ -483,19 +483,32 @@ def song_rows(con):
 
 def text_rows(con):
     sql = """
+    WITH counted_text_starts AS (
+        SELECT progress.text_id, progress.start_service_id AS service_id
+          FROM lehr_progress progress
+        UNION
+        SELECT service.text_id, service.id AS service_id
+          FROM services service
+         WHERE service.service_type = 'GEBET'
+           AND NOT EXISTS (
+                SELECT 1
+                  FROM lehr_progress_services member
+                 WHERE member.service_id = service.id
+           )
+    )
     SELECT texts.id, texts.text, texts.description,
            texts.scripture_reference, texts.songs_for_text, texts.notes,
            (SELECT COUNT(*)
-              FROM lehr_progress progress
-             WHERE progress.text_id = texts.id) AS times_used,
+              FROM counted_text_starts counted_start
+             WHERE counted_start.text_id = texts.id) AS times_used,
            (SELECT COUNT(*)
               FROM services
              WHERE services.text_id = texts.id) AS service_count,
            (SELECT MAX(start_service.service_date)
-              FROM lehr_progress progress
+              FROM counted_text_starts counted_start
               JOIN services start_service
-                ON start_service.id = progress.start_service_id
-             WHERE progress.text_id = texts.id) AS last_used,
+                ON start_service.id = counted_start.service_id
+             WHERE counted_start.text_id = texts.id) AS last_used,
            (SELECT COUNT(*)
               FROM text_attachments attachments
              WHERE attachments.text_id = texts.id) AS attachment_count
