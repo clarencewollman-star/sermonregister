@@ -481,7 +481,8 @@ def song_rows(con):
     return [dict(row) for row in con.execute(sql)]
 
 
-def text_rows(con):
+def text_usage_history_by_text(con):
+    histories = {}
     sql = """
     WITH counted_text_starts AS (
         SELECT progress.text_id, progress.start_service_id AS service_id
@@ -496,19 +497,30 @@ def text_rows(con):
                  WHERE member.service_id = service.id
            )
     )
+    SELECT counted_start.text_id, service.id, service.service_date,
+           service.service_type
+      FROM counted_text_starts counted_start
+      JOIN services service ON service.id = counted_start.service_id
+  ORDER BY service.service_date DESC, service.created_at DESC, service.id DESC
+    """
+    for row in con.execute(sql):
+        histories.setdefault(row["text_id"], []).append(
+            {
+                "id": row["id"],
+                "date": row["service_date"],
+                "type": row["service_type"],
+            }
+        )
+    return histories
+
+
+def text_rows(con):
+    sql = """
     SELECT texts.id, texts.text, texts.description,
            texts.scripture_reference, texts.songs_for_text, texts.notes,
            (SELECT COUNT(*)
-              FROM counted_text_starts counted_start
-             WHERE counted_start.text_id = texts.id) AS times_used,
-           (SELECT COUNT(*)
               FROM services
              WHERE services.text_id = texts.id) AS service_count,
-           (SELECT MAX(start_service.service_date)
-              FROM counted_text_starts counted_start
-              JOIN services start_service
-                ON start_service.id = counted_start.service_id
-             WHERE counted_start.text_id = texts.id) AS last_used,
            (SELECT COUNT(*)
               FROM text_attachments attachments
              WHERE attachments.text_id = texts.id) AS attachment_count
@@ -516,8 +528,13 @@ def text_rows(con):
   ORDER BY texts.text COLLATE NOCASE
     """
     records_by_text = tag_records_by_text(con)
+    history_by_text = text_usage_history_by_text(con)
     rows = [dict(row) for row in con.execute(sql)]
     for row in rows:
+        usage_history = history_by_text.get(row["id"], [])
+        row["usage_history"] = usage_history
+        row["times_used"] = len(usage_history)
+        row["last_used"] = usage_history[0]["date"] if usage_history else None
         row["tag_records"] = records_by_text.get(row["id"], [])
         row["tags"] = ", ".join(tag["name"] for tag in row["tag_records"])
     return rows

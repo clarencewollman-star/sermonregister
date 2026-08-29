@@ -327,16 +327,46 @@ class TextIdentityApiTest(unittest.TestCase):
             "Usage Mixed Starts", "LEHR", "2026-04-01"
         )
         self.assertNotEqual(mixed_gebet["progress_id"], mixed_lehr["progress_id"])
+        self.request(
+            "POST",
+            "/texts",
+            {"text": "Usage Never Used", "description": "", "tags": []},
+            201,
+        )
 
         texts = {row["text"]: row for row in self.request("GET", "/texts")}
+        self.assertEqual(texts["Usage Never Used"]["times_used"], 0)
+        self.assertEqual(texts["Usage Never Used"]["usage_history"], [])
         self.assertEqual(texts["Usage Lehr"]["times_used"], 1)
         self.assertEqual(texts["Usage Lehr"]["last_used"], "2026-01-01")
+        self.assertEqual(
+            texts["Usage Lehr"]["usage_history"],
+            [{"id": lehr["id"], "date": "2026-01-01", "type": "LEHR"}],
+        )
         self.assertEqual(texts["Usage Gebet Start"]["times_used"], 1)
         self.assertEqual(texts["Usage Gebet Start"]["last_used"], "2026-02-01")
+        self.assertEqual(
+            texts["Usage Gebet Start"]["usage_history"],
+            [{"id": gebet_start["id"], "date": "2026-02-01", "type": "GEBET"}],
+        )
         self.assertEqual(texts["Usage Legacy Gebet"]["times_used"], 2)
         self.assertEqual(texts["Usage Legacy Gebet"]["last_used"], "2025-06-01")
+        self.assertEqual(
+            texts["Usage Legacy Gebet"]["usage_history"],
+            [
+                {"id": legacy_second["id"], "date": "2025-06-01", "type": "GEBET"},
+                {"id": legacy_first["id"], "date": "2025-01-01", "type": "GEBET"},
+            ],
+        )
         self.assertEqual(texts["Usage Mixed Starts"]["times_used"], 2)
         self.assertEqual(texts["Usage Mixed Starts"]["last_used"], "2026-04-01")
+        self.assertEqual(
+            texts["Usage Mixed Starts"]["usage_history"],
+            [
+                {"id": mixed_lehr["id"], "date": "2026-04-01", "type": "LEHR"},
+                {"id": mixed_gebet["id"], "date": "2026-03-01", "type": "GEBET"},
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -132,7 +132,21 @@ type TextRecord = {
   serviceCount: number;
   lastUsedValue: string;
   lastUsed: string;
+  usageHistory: TextUsageEntry[];
   attachmentCount: number;
+};
+
+type TextUsageEntry = {
+  id: string;
+  dateValue: string;
+  date: string;
+  type: "Lehr" | "Gebet";
+};
+
+type ApiTextUsageEntry = {
+  id: string;
+  date: string;
+  type: "LEHR" | "GEBET";
 };
 
 type ApiTextRecord = {
@@ -147,6 +161,7 @@ type ApiTextRecord = {
   times_used: number;
   service_count: number;
   last_used: string | null;
+  usage_history: ApiTextUsageEntry[];
   attachment_count: number;
   text_action?: "UPDATED" | "RENAMED" | "MERGED";
   affected_service_count?: number;
@@ -453,6 +468,16 @@ const textFromApi = (row: ApiTextRecord): TextRecord => ({
         year: "numeric",
       })
     : "Never",
+  usageHistory: (row.usage_history || []).map((entry) => ({
+    id: entry.id,
+    dateValue: entry.date,
+    date: new Date(`${entry.date}T12:00:00`).toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }),
+    type: entry.type === "LEHR" ? "Lehr" : "Gebet",
+  })),
   attachmentCount: Number(row.attachment_count || 0),
 });
 
@@ -5209,24 +5234,55 @@ export default function Home() {
                       />
                     </div>
                     {textEditor !== "new" && (
-                      <div className="col-12">
-                        <div className="card bg-body-tertiary border-0 mb-0">
-                          <div className="card-body d-flex flex-wrap gap-4 py-3">
-                            <span>
-                              <strong>{textEditor.timesUsed}</strong>
-                              <span className="text-body-secondary ms-2">
-                                Times Used
+                      <>
+                        <div className="col-12">
+                          <div className="card bg-body-tertiary border-0 mb-0">
+                            <div className="card-body d-flex flex-wrap gap-4 py-3">
+                              <span>
+                                <strong>{textEditor.timesUsed}</strong>
+                                <span className="text-body-secondary ms-2">
+                                  Times Used
+                                </span>
                               </span>
-                            </span>
-                            <span>
-                              <strong>{textEditor.lastUsed}</strong>
-                              <span className="text-body-secondary ms-2">
-                                Last Used
+                              <span>
+                                <strong>{textEditor.lastUsed}</strong>
+                                <span className="text-body-secondary ms-2">
+                                  Last Used
+                                </span>
                               </span>
-                            </span>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                        <div className="col-12">
+                          <div className="card border mb-0">
+                            <div className="card-header py-2">
+                              <h6 className="mb-0">
+                                <i className="bi bi-calendar3 me-2" />
+                                Usage History
+                              </h6>
+                            </div>
+                            <div className="list-group list-group-flush">
+                              {textEditor.usageHistory.length ? (
+                                textEditor.usageHistory.map((entry) => (
+                                  <div
+                                    className="list-group-item d-flex align-items-center justify-content-between gap-3 py-2"
+                                    key={entry.id}
+                                  >
+                                    <time dateTime={entry.dateValue}>{entry.date}</time>
+                                    <span className="badge text-bg-light border">
+                                      {entry.type}
+                                    </span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="list-group-item text-body-secondary py-3">
+                                  This Text Has Not Been Used Yet.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </>
                     )}
                     <div className="col-12">
                       <div className="card border mb-0">
