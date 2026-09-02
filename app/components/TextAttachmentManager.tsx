@@ -4,12 +4,15 @@
 
 import {
   ChangeEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
+import { createPortal } from "react-dom";
 import ReactCrop, { type PercentCrop } from "react-image-crop";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type {
@@ -69,6 +72,19 @@ type Props = {
 
 const apiUrl = "/api/text-attachments";
 const fullCrop: PercentCrop = { unit: "%", x: 0, y: 0, width: 100, height: 100 };
+const subscribeToClient = () => () => undefined;
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
+
+function BodyPortal({ children }: { children: ReactNode }) {
+  const isClient = useSyncExternalStore(
+    subscribeToClient,
+    getClientSnapshot,
+    getServerSnapshot,
+  );
+
+  return isClient ? createPortal(children, document.body) : null;
+}
 
 function formatBytes(value: number) {
   if (!value) return "0 B";
@@ -445,6 +461,15 @@ function AttachmentViewer({
   const attachment = attachments[index];
 
   useEffect(() => {
+    const pageBody = window.document.body;
+    const previousOverflow = pageBody.style.overflow;
+    pageBody.style.overflow = "hidden";
+    return () => {
+      pageBody.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
     if (attachment.mime_type !== "application/pdf") return;
     let cancelled = false;
     let task: PDFDocumentLoadingTask | null = null;
@@ -570,19 +595,14 @@ function AttachmentViewer({
         <button className="btn btn-outline-light" type="button" disabled={index === 0} onClick={() => void move(index - 1)}>
           <i className="bi bi-chevron-left me-1" />Previous Attachment
         </button>
-        <div className="attachment-viewer-footer-center">
-          <span>
-            {attachment.mime_type === "application/pdf" &&
-            document && documentAttachmentId === attachment.id
-              ? `Page ${page} Of ${document.numPages}`
-              : attachment.mime_type === "application/pdf"
-                ? "Loading PDF"
-                : "Photo"}
-          </span>
-          <button className="btn btn-light btn-sm" type="button" onClick={saveAndClose}>
-            <i className="bi bi-x-lg me-1" />Close
-          </button>
-        </div>
+        <span>
+          {attachment.mime_type === "application/pdf" &&
+          document && documentAttachmentId === attachment.id
+            ? `Page ${page} Of ${document.numPages}`
+            : attachment.mime_type === "application/pdf"
+              ? "Loading PDF"
+              : "Photo"}
+        </span>
         <button className="btn btn-outline-light" type="button" disabled={index === attachments.length - 1} onClick={() => void move(index + 1)}>
           Next Attachment<i className="bi bi-chevron-right ms-1" />
         </button>
@@ -838,23 +858,27 @@ export default function TextAttachmentManager({
         </div>
       </div>
       {photoDrafts.length > 0 && (
-        <PhotoReview
-          drafts={photoDrafts}
-          setDrafts={setPhotoDrafts}
-          onClose={() => {
-            photoDrafts.forEach((draft) => URL.revokeObjectURL(draft.sourceUrl));
-            setPhotoDrafts([]);
-          }}
-          onSaved={savePhoto}
-        />
+        <BodyPortal>
+          <PhotoReview
+            drafts={photoDrafts}
+            setDrafts={setPhotoDrafts}
+            onClose={() => {
+              photoDrafts.forEach((draft) => URL.revokeObjectURL(draft.sourceUrl));
+              setPhotoDrafts([]);
+            }}
+            onSaved={savePhoto}
+          />
+        </BodyPortal>
       )}
       {viewerId && viewerAttachments.some((item) => item.id === viewerId) && (
-        <AttachmentViewer
-          attachments={viewerAttachments}
-          initialId={viewerId}
-          onClose={() => setViewerId("")}
-          onPosition={savePosition}
-        />
+        <BodyPortal>
+          <AttachmentViewer
+            attachments={viewerAttachments}
+            initialId={viewerId}
+            onClose={() => setViewerId("")}
+            onPosition={savePosition}
+          />
+        </BodyPortal>
       )}
     </>
   );

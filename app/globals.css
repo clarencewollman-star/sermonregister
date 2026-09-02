@@ -1330,13 +1330,6 @@ button.nav-link {
   padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
 }
 
-.attachment-viewer-footer-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.65rem;
-}
-
 .attachment-viewer-title {
   display: flex;
   min-width: 0;
@@ -1508,6 +1501,10 @@ button.nav-link {
     text-align: left;
   }
 
+  .attachment-viewer-toolbar > .btn:first-child {
+    min-height: 44px;
+  }
+
   .attachment-viewer-actions {
     grid-column: 1 / -1;
     justify-content: center;
@@ -1520,11 +1517,6 @@ button.nav-link {
   .attachment-viewer-footer {
     padding: 0.45rem 0.45rem calc(0.45rem + env(safe-area-inset-bottom));
     font-size: 0.78rem;
-  }
-
-  .attachment-viewer-footer-center {
-    flex-direction: column;
-    gap: 0.2rem;
   }
 
   .attachment-viewer-footer .btn {
