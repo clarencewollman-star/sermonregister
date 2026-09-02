@@ -173,11 +173,42 @@ CREATE TABLE IF NOT EXISTS text_attachments (
   id TEXT PRIMARY KEY,
   text_id TEXT NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
   original_file_name TEXT NOT NULL,
+  display_name TEXT NOT NULL,
   storage_key TEXT NOT NULL UNIQUE,
-  mime_type TEXT NOT NULL CHECK (mime_type = 'application/pdf'),
+  mime_type TEXT NOT NULL CHECK (mime_type IN (
+    'application/pdf', 'image/jpeg', 'image/png', 'image/webp',
+    'image/heic', 'image/heif'
+  )),
   byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
-  created_at TEXT NOT NULL
+  display_storage_key TEXT UNIQUE,
+  display_mime_type TEXT CHECK (display_mime_type IN (
+    'image/jpeg', 'image/png', 'image/webp'
+  )),
+  display_byte_size INTEGER CHECK (display_byte_size >= 0),
+  display_sha256 TEXT CHECK (
+    display_sha256 IS NULL OR length(display_sha256) = 64
+  ),
+  sort_order INTEGER NOT NULL CHECK (sort_order >= 1),
+  crop_json TEXT,
+  rotation_degrees INTEGER NOT NULL DEFAULT 0 CHECK (
+    rotation_degrees IN (0, 90, 180, 270)
+  ),
+  last_page INTEGER NOT NULL DEFAULT 1 CHECK (last_page >= 1),
+  last_offset REAL NOT NULL DEFAULT 0 CHECK (
+    last_offset >= 0 AND last_offset <= 1
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (mime_type = 'application/pdf' AND display_storage_key IS NULL AND
+      display_mime_type IS NULL AND display_byte_size IS NULL AND
+      display_sha256 IS NULL)
+    OR
+    (mime_type <> 'application/pdf' AND display_storage_key IS NOT NULL AND
+      display_mime_type IS NOT NULL AND display_byte_size IS NOT NULL AND
+      display_sha256 IS NOT NULL)
+  )
 );
 
 CREATE TABLE IF NOT EXISTS vorrade_attachments (
@@ -211,9 +242,11 @@ CREATE INDEX IF NOT EXISTS service_attachments_owner_idx ON service_attachments(
 CREATE INDEX IF NOT EXISTS vorrade_attachments_owner_idx ON vorrade_attachments(vorrade_id);
 CREATE INDEX IF NOT EXISTS service_imports_service_idx ON service_imports(service_id);
 CREATE INDEX IF NOT EXISTS text_attachments_owner_idx ON text_attachments(text_id);
+CREATE UNIQUE INDEX IF NOT EXISTS text_attachments_order_idx
+  ON text_attachments(text_id, sort_order);
 CREATE INDEX IF NOT EXISTS lehr_progress_text_status_idx
   ON lehr_progress(text_id, status);
 CREATE INDEX IF NOT EXISTS lehr_progress_services_progress_idx
   ON lehr_progress_services(progress_id, sequence_number);
 
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;

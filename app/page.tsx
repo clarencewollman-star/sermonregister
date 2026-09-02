@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ChangeEvent,
   FocusEvent,
   FormEvent,
   useCallback,
@@ -10,6 +9,9 @@ import {
   useRef,
   useState,
 } from "react";
+import TextAttachmentManager, {
+  type TextAttachment,
+} from "./components/TextAttachmentManager";
 
 declare const __APP_VERSION__: string;
 
@@ -205,14 +207,6 @@ type ApiTagRecord = {
   sermon_count?: number;
 };
 
-type TextAttachment = {
-  id: string;
-  text_id: string;
-  original_file_name: string;
-  byte_size: number;
-  created_at: string;
-};
-
 type BackupHistoryItem = {
   id: string;
   createdAt: string;
@@ -337,7 +331,7 @@ const backupStageLabel = (stage: string) => {
     WAITING_TO_START: "Waiting To Start",
     CHECKING_DATABASE: "Checking Database",
     CREATING_SNAPSHOT: "Creating Stable Snapshot",
-    VERIFYING_PDFS: "Verifying PDFs",
+    VERIFYING_ATTACHMENTS: "Verifying Attachments",
     PACKAGING_BACKUP: "Packaging Backup",
     READY_TO_DOWNLOAD: "Starting Download",
     STARTING_DOWNLOAD: "Downloading Backup",
@@ -353,7 +347,7 @@ const backupStageProgress = (stage: string) => {
     WAITING_TO_START: 5,
     CHECKING_DATABASE: 15,
     CREATING_SNAPSHOT: 35,
-    VERIFYING_PDFS: 55,
+    VERIFYING_ATTACHMENTS: 55,
     PACKAGING_BACKUP: 78,
     READY_TO_DOWNLOAD: 92,
     STARTING_DOWNLOAD: 96,
@@ -512,12 +506,6 @@ function recentlyUsedFirst<T extends { id: string; lastUsedValue: string }>(
   return [...recent, ...alphabetical.filter((record) => !recentIds.has(record.id))];
 }
 
-function formatFileSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function formHasEnteredValues(formElement: HTMLFormElement | null) {
   if (!formElement) return false;
   return Array.from(new FormData(formElement).values()).some(
@@ -534,7 +522,7 @@ function textUsageSummary(record: TextRecord) {
     record.timesUsed > 0
       ? [`${record.timesUsed} Uses`, `Last ${record.lastUsed}`]
       : ["Never Used"];
-  if (record.attachmentCount) parts.push(`${record.attachmentCount} PDFs`);
+  if (record.attachmentCount) parts.push(`${record.attachmentCount} Attachments`);
   return parts.join(" · ");
 }
 
@@ -546,15 +534,6 @@ function statusBadgeClass(status: string) {
   if (status === "Started Lehr") return "text-bg-primary";
   if (status === "Continued") return "text-bg-info";
   return "text-bg-secondary";
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-  }
-  return window.btoa(binary);
 }
 
 function titleCaseTag(value: string) {
@@ -1036,7 +1015,7 @@ export default function Home() {
     Partial<Record<TextMergeField, "SOURCE" | "TARGET">>
   >({});
   const [textAttachments, setTextAttachments] = useState<TextAttachment[]>([]);
-  const [pdfUploading, setPdfUploading] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [tagManagerQuery, setTagManagerQuery] = useState("");
   const [tagManagerError, setTagManagerError] = useState("");
@@ -1545,7 +1524,7 @@ export default function Home() {
     const result = (await response.json()) as TextAttachment[] | { error?: string };
     if (!response.ok || !Array.isArray(result)) {
       throw new Error(
-        (!Array.isArray(result) && result.error) || "Could Not Load PDFs",
+        (!Array.isArray(result) && result.error) || "Could Not Load Attachments",
       );
     }
     setTextAttachments(result);
@@ -1720,8 +1699,8 @@ export default function Home() {
 
   const closeTextEditor = useCallback(async () => {
     if (!textEditor) return;
-    if (pdfUploading) {
-      setTextError("Please Wait For The PDF Upload To Finish Before Closing.");
+    if (attachmentBusy) {
+      setTextError("Please Wait For The Attachment To Finish Before Closing.");
       return;
     }
     if (
@@ -1741,7 +1720,7 @@ export default function Home() {
     await textAutoSaveQueue.current;
     if (textAutoSaveFailed.current) return;
     setTextEditor(null);
-  }, [pdfUploading, textEditor]);
+  }, [attachmentBusy, textEditor]);
 
   function autoSaveSong(event: FocusEvent<HTMLFormElement>) {
     if (!songEditor || songEditor === "new") return;
@@ -1840,7 +1819,7 @@ export default function Home() {
     setTextEditorTags(record.tagRecords);
     setTextEditor(record);
     void loadTextAttachments(record.id).catch((error) =>
-      setTextError(error instanceof Error ? error.message : "Could Not Load PDFs"),
+      setTextError(error instanceof Error ? error.message : "Could Not Load Attachments"),
     );
   }
 
@@ -2166,7 +2145,7 @@ export default function Home() {
         : "",
       textAttachments.length
         ? `${textAttachments.length} ${
-            textAttachments.length === 1 ? "PDF" : "PDFs"
+            textAttachments.length === 1 ? "Attachment" : "Attachments"
           }`
         : "",
     ].filter(Boolean);
@@ -2192,63 +2171,6 @@ export default function Home() {
       setTextEditor(null);
     } catch (error) {
       setTextError(error instanceof Error ? error.message : "Could Not Delete Text");
-    }
-  }
-
-  async function uploadTextPdfs(event: ChangeEvent<HTMLInputElement>) {
-    const input = event.currentTarget;
-    const files = Array.from(input.files || []);
-    if (!files.length || !textEditor || textEditor === "new") return;
-    setPdfUploading(true);
-    setTextError("");
-    try {
-      for (const file of files) {
-        if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-          throw new Error(`${file.name} Is Not A PDF File.`);
-        }
-        if (file.size > 25 * 1024 * 1024) {
-          throw new Error(`${file.name} Is Larger Than 25 MB.`);
-        }
-        const response = await fetch(textAttachmentsApiUrl(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            textId: textEditor.id,
-            fileName: file.name,
-            mimeType: file.type || "application/pdf",
-            data: arrayBufferToBase64(await file.arrayBuffer()),
-          }),
-        });
-        const result = (await response.json()) as TextAttachment & { error?: string };
-        if (!response.ok) throw new Error(result.error || `Could Not Add ${file.name}`);
-      }
-      await loadTextAttachments(textEditor.id);
-      await refreshTexts();
-    } catch (error) {
-      setTextError(error instanceof Error ? error.message : "Could Not Add PDFs");
-    } finally {
-      input.value = "";
-      setPdfUploading(false);
-    }
-  }
-
-  async function removeTextAttachment(attachment: TextAttachment) {
-    if (!window.confirm(`Remove ${attachment.original_file_name}?`)) return;
-    setTextError("");
-    try {
-      const response = await fetch(textAttachmentsApiUrl(), {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: attachment.id }),
-      });
-      const result = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(result.error || "Could Not Remove PDF");
-      setTextAttachments((current) =>
-        current.filter((record) => record.id !== attachment.id),
-      );
-      await refreshTexts();
-    } catch (error) {
-      setTextError(error instanceof Error ? error.message : "Could Not Remove PDF");
     }
   }
 
@@ -3376,7 +3298,7 @@ export default function Home() {
                           </button>
                         </th>
                         <th>Notes</th>
-                        <th className="text-center">PDFs</th>
+                        <th className="text-center">Attachments</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3838,7 +3760,7 @@ export default function Home() {
                     </div>
                     <div className="col-6 col-md-2">
                       <div className="border rounded p-3 h-100">
-                        <div className="text-body-secondary small">PDFs</div>
+                        <div className="text-body-secondary small">Attachments</div>
                         <div className="fs-4 fw-semibold">
                           {backupOverview?.pdfCount ?? "—"}
                         </div>
@@ -3856,7 +3778,7 @@ export default function Home() {
                     </div>
                     <div className="col-6 col-md-2">
                       <div className="border rounded p-3 h-100">
-                        <div className="text-body-secondary small">PDF Storage</div>
+                        <div className="text-body-secondary small">Attachment Storage</div>
                         <div className="fw-semibold mt-2">
                           {backupOverview ? formatBytes(backupOverview.pdfBytes) : "—"}
                         </div>
@@ -3869,8 +3791,8 @@ export default function Home() {
                       <div>
                         <div className="fw-semibold">Complete Lehr Register Backup</div>
                         <small className="text-body-secondary">
-                          Includes A Verified SQLite Snapshot, Every PDF, A Manifest,
-                          And Restore Instructions.
+                          Includes A Verified SQLite Snapshot, Every Attachment Original
+                          And Viewing Copy, A Manifest, And Restore Instructions.
                         </small>
                       </div>
                       <button
@@ -3935,7 +3857,7 @@ export default function Home() {
                       <div className="alert alert-success mt-3 mb-0" role="status">
                         <i className="bi bi-check-circle-fill me-2" />
                         <strong>Backup Complete.</strong> {backupJob.fileName} ·{" "}
-                        {formatBytes(backupJob.byteSize)} · {backupJob.pdfCount} PDFs
+                        {formatBytes(backupJob.byteSize)} · {backupJob.pdfCount} Attachments
                       </div>
                     )}
                     {backupJob?.status === "CANCELLED" && (
@@ -3971,7 +3893,7 @@ export default function Home() {
                             <th>Status</th>
                             <th>File</th>
                             <th className="text-end">Size</th>
-                            <th className="text-end">PDFs</th>
+                            <th className="text-end">Attachments</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -5285,87 +5207,35 @@ export default function Home() {
                       </>
                     )}
                     <div className="col-12">
-                      <div className="card border mb-0">
-                        <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
-                          <div>
+                      {textEditor === "new" ? (
+                        <div className="card border mb-0">
+                          <div className="card-header">
                             <h6 className="mb-0">
-                              <i className="bi bi-file-earmark-pdf me-2" />
-                              Private PDF Attachments
+                              <i className="bi bi-paperclip me-2" />
+                              Private Attachments
                             </h6>
-                            <small className="text-body-secondary">
-                              Add More Than One PDF To This Text.
-                            </small>
                           </div>
-                          {textEditor !== "new" && (
-                            <label
-                              className={`btn btn-outline-primary btn-sm mb-0 ${
-                                pdfUploading ? "disabled" : ""
-                              }`}
-                            >
-                              <i className="bi bi-plus-lg me-1" />
-                              {pdfUploading ? "Adding PDFs..." : "Add PDFs"}
-                              <input
-                                className="visually-hidden"
-                                type="file"
-                                accept="application/pdf,.pdf"
-                                multiple
-                                disabled={pdfUploading}
-                                onChange={uploadTextPdfs}
-                              />
-                            </label>
-                          )}
+                          <div className="card-body text-body-secondary">
+                            Save The Text Before Adding PDFs Or Photos.
+                          </div>
                         </div>
-                        <div className="list-group list-group-flush">
-                          {textEditor === "new" ? (
-                            <div className="list-group-item text-body-secondary py-3">
-                              Save The Text Before Adding PDFs.
-                            </div>
-                          ) : textAttachments.length ? (
-                            textAttachments.map((attachment) => (
-                              <div
-                                className="list-group-item d-flex flex-wrap align-items-center justify-content-between gap-2"
-                                key={attachment.id}
-                              >
-                                <div className="min-width-0">
-                                  <strong className="d-block text-truncate">
-                                    {attachment.original_file_name}
-                                  </strong>
-                                  <small className="text-body-secondary">
-                                    {formatFileSize(attachment.byte_size)}
-                                  </small>
-                                </div>
-                                <div className="btn-group btn-group-sm" role="group">
-                                  <a
-                                    className="btn btn-outline-primary"
-                                    href={`${textAttachmentsApiUrl()}?fileId=${encodeURIComponent(attachment.id)}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    Open
-                                  </a>
-                                  <a
-                                    className="btn btn-outline-secondary"
-                                    href={`${textAttachmentsApiUrl()}?fileId=${encodeURIComponent(attachment.id)}&download=1`}
-                                  >
-                                    Download
-                                  </a>
-                                  <button
-                                    className="btn btn-outline-danger"
-                                    type="button"
-                                    onClick={() => removeTextAttachment(attachment)}
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="list-group-item text-body-secondary py-3">
-                              No PDFs Attached Yet.
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      ) : (
+                        <TextAttachmentManager
+                          textId={textEditor.id}
+                          textName={textEditor.text}
+                          attachments={textAttachments}
+                          busy={attachmentBusy}
+                          setBusy={setAttachmentBusy}
+                          onAttachmentsChange={setTextAttachments}
+                          onRefresh={async () => {
+                            await Promise.all([
+                              loadTextAttachments(textEditor.id),
+                              refreshTexts(),
+                            ]);
+                          }}
+                          onError={setTextError}
+                        />
+                      )}
                     </div>
                   </div>
                   </div>
@@ -5444,7 +5314,7 @@ export default function Home() {
               <div className="modal-body">
                 <div className="alert alert-info">
                   <i className="bi bi-shield-check me-2" />
-                  All Services, Lehr Progress, Tags, And PDFs From “
+                  All Services, Lehr Progress, Tags, And Attachments From “
                   {textMergeRequest.source.text}” Will Be Preserved In The Existing Text.
                 </div>
                 {textMergeRequest.conflicts.length ? (
@@ -5511,7 +5381,7 @@ export default function Home() {
                   <div className="alert alert-success mb-0">
                     <i className="bi bi-check-circle-fill me-2" />
                     There Are No Conflicting Information Fields. Blank Fields Will Be Filled,
-                    And All Tags And PDFs Will Be Combined.
+                    And All Tags And Attachments Will Be Combined.
                   </div>
                 )}
               </div>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "admin-lte/dist/css/adminlte.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
+import "react-image-crop/dist/ReactCrop.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

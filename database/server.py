@@ -27,7 +27,8 @@ SCHEMA_PATH = ROOT / "database" / "schema.sql"
 APP_ORIGIN = os.environ.get("APP_ORIGIN", "http://localhost:3000")
 API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("API_PORT", "3001"))
-MAX_PDF_BYTES = 25 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_DISPLAY_BYTES = 10 * 1024 * 1024
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "America/Los_Angeles")
 try:
     LOCAL_TIMEZONE = ZoneInfo(APP_TIMEZONE)
@@ -104,6 +105,50 @@ CREATE TABLE texts_v2 (
 )
 """
 
+TEXT_ATTACHMENTS_V2_SQL = """
+CREATE TABLE text_attachments_v2 (
+  id TEXT PRIMARY KEY,
+  text_id TEXT NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+  original_file_name TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  storage_key TEXT NOT NULL UNIQUE,
+  mime_type TEXT NOT NULL CHECK (mime_type IN (
+    'application/pdf', 'image/jpeg', 'image/png', 'image/webp',
+    'image/heic', 'image/heif'
+  )),
+  byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  display_storage_key TEXT UNIQUE,
+  display_mime_type TEXT CHECK (display_mime_type IN (
+    'image/jpeg', 'image/png', 'image/webp'
+  )),
+  display_byte_size INTEGER CHECK (display_byte_size >= 0),
+  display_sha256 TEXT CHECK (
+    display_sha256 IS NULL OR length(display_sha256) = 64
+  ),
+  sort_order INTEGER NOT NULL CHECK (sort_order >= 1),
+  crop_json TEXT,
+  rotation_degrees INTEGER NOT NULL DEFAULT 0 CHECK (
+    rotation_degrees IN (0, 90, 180, 270)
+  ),
+  last_page INTEGER NOT NULL DEFAULT 1 CHECK (last_page >= 1),
+  last_offset REAL NOT NULL DEFAULT 0 CHECK (
+    last_offset >= 0 AND last_offset <= 1
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (mime_type = 'application/pdf' AND display_storage_key IS NULL AND
+      display_mime_type IS NULL AND display_byte_size IS NULL AND
+      display_sha256 IS NULL)
+    OR
+    (mime_type <> 'application/pdf' AND display_storage_key IS NOT NULL AND
+      display_mime_type IS NOT NULL AND display_byte_size IS NOT NULL AND
+      display_sha256 IS NOT NULL)
+  )
+)
+"""
+
 
 def now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -121,8 +166,11 @@ def schema_backup(database_path, connection):
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     backup_path = backup_dir / f"sermon-register-before-schema-change-{stamp}.db"
-    with sqlite3.connect(backup_path) as backup:
+    backup = sqlite3.connect(backup_path)
+    try:
         connection.backup(backup)
+    finally:
+        backup.close()
     return backup_path
 
 
@@ -143,6 +191,24 @@ def ensure_schema(connection, database_path=DB_PATH):
     if existing_text_table and "text" not in existing_text_columns:
         bootstrap_schema = bootstrap_schema.replace(
             "CREATE INDEX IF NOT EXISTS texts_text_idx ON texts(text COLLATE NOCASE);",
+            "",
+        )
+    existing_attachment_table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'text_attachments'"""
+    ).fetchone()
+    existing_attachment_columns = (
+        {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(text_attachments)")
+        }
+        if existing_attachment_table
+        else set()
+    )
+    if existing_attachment_table and "sort_order" not in existing_attachment_columns:
+        bootstrap_schema = bootstrap_schema.replace(
+            """CREATE UNIQUE INDEX IF NOT EXISTS text_attachments_order_idx
+  ON text_attachments(text_id, sort_order);""",
             "",
         )
     connection.executescript(bootstrap_schema)
@@ -273,6 +339,46 @@ def ensure_schema(connection, database_path=DB_PATH):
         connection.execute("ALTER TABLE texts ADD COLUMN songs_for_text TEXT")
         connection.execute("PRAGMA user_version = 6")
         connection.commit()
+
+    attachment_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(text_attachments)")
+    }
+    if attachment_columns and "display_name" not in attachment_columns:
+        if not backup_path:
+            backup_path = schema_backup(database_path, connection)
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(TEXT_ATTACHMENTS_V2_SQL)
+            connection.execute(
+                """INSERT INTO text_attachments_v2
+                   (id, text_id, original_file_name, display_name, storage_key,
+                    mime_type, byte_size, sha256, display_storage_key,
+                    display_mime_type, display_byte_size, display_sha256,
+                    sort_order, crop_json, rotation_degrees, last_page,
+                    last_offset, created_at, updated_at)
+                   SELECT id, text_id, original_file_name, original_file_name,
+                          storage_key, mime_type, byte_size, sha256,
+                          NULL, NULL, NULL, NULL,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY text_id ORDER BY created_at, id
+                          ),
+                          NULL, 0, 1, 0, created_at, created_at
+                     FROM text_attachments"""
+            )
+            connection.execute("DROP TABLE text_attachments")
+            connection.execute(
+                "ALTER TABLE text_attachments_v2 RENAME TO text_attachments"
+            )
+            connection.execute("PRAGMA user_version = 10")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     connection.executescript(schema_sql)
     if not metadata_value(connection, "text_tags_migration_v1"):
@@ -436,7 +542,7 @@ def migrate_legacy_text_tags(con):
                     (row["id"], tag_id, stamp),
                 )
     set_metadata(con, "text_tags_migration_v1", now())
-    con.execute("PRAGMA user_version = 9")
+    con.execute("PRAGMA user_version = 10")
     con.commit()
 
 
@@ -575,8 +681,8 @@ def text_content_labels(con, text_id):
         labels.append(f"{tag_count} Tag" if tag_count == 1 else f"{tag_count} Tags")
     if attachment_count:
         labels.append(
-            f"{attachment_count} PDF" if attachment_count == 1
-            else f"{attachment_count} PDFs"
+            f"{attachment_count} Attachment" if attachment_count == 1
+            else f"{attachment_count} Attachments"
         )
     return labels
 
@@ -646,9 +752,19 @@ def merge_text_records(con, source_id, target_id, source_values, choices):
     con.execute("UPDATE lehr_progress SET text_id = ?, updated_at = ? WHERE text_id = ?", (
         target_id, stamp, source_id
     ))
-    con.execute("UPDATE text_attachments SET text_id = ? WHERE text_id = ?", (
-        target_id, source_id
-    ))
+    target_attachment_count = int(
+        con.execute(
+            """SELECT COALESCE(MAX(sort_order), 0)
+                 FROM text_attachments WHERE text_id = ?""",
+            (target_id,),
+        ).fetchone()[0]
+    )
+    con.execute(
+        """UPDATE text_attachments
+              SET text_id = ?, sort_order = sort_order + ?, updated_at = ?
+            WHERE text_id = ?""",
+        (target_id, target_attachment_count, stamp, source_id),
+    )
     con.execute(
         """INSERT OR IGNORE INTO text_tags(text_id, tag_id, created_at)
            SELECT ?, tag_id, created_at FROM text_tags WHERE text_id = ?""",
@@ -802,10 +918,13 @@ def text_attachment_rows(con, text_id):
     return [
         dict(row)
         for row in con.execute(
-            """SELECT id, text_id, original_file_name, byte_size, created_at
+            """SELECT id, text_id, original_file_name, display_name, mime_type,
+                      byte_size, display_byte_size, sort_order, crop_json,
+                      rotation_degrees, last_page, last_offset,
+                      created_at, updated_at
                  FROM text_attachments
                 WHERE text_id = ?
-                ORDER BY created_at DESC""",
+                ORDER BY sort_order, created_at, id""",
             (text_id,),
         )
     ]
@@ -817,6 +936,67 @@ def attachment_path(storage_key):
     if os.path.commonpath((str(root), str(candidate))) != str(root):
         raise ValueError("Invalid attachment storage path")
     return candidate
+
+
+ATTACHMENT_MIME_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+}
+DISPLAY_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp"}
+
+
+def attachment_file_name(value, fallback):
+    name = Path(str(value or "")).name.strip()
+    name = "".join(character for character in name if ord(character) >= 32)
+    return (name[:180] or fallback).strip()
+
+
+def detected_attachment_mime(file_data):
+    if file_data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if file_data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if file_data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if (
+        len(file_data) >= 12
+        and file_data.startswith(b"RIFF")
+        and file_data[8:12] == b"WEBP"
+    ):
+        return "image/webp"
+    if len(file_data) >= 12 and file_data[4:8] == b"ftyp":
+        brand = file_data[8:12]
+        if brand in (b"heic", b"heix", b"hevc", b"hevx"):
+            return "image/heic"
+        if brand in (b"mif1", b"msf1"):
+            return "image/heif"
+    return None
+
+
+def decoded_attachment_data(value, label, maximum):
+    try:
+        file_data = base64.b64decode(str(value or "").strip(), validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError(f"The {label} data is invalid")
+    if not file_data:
+        raise ValueError(f"The {label} data is empty")
+    if len(file_data) > maximum:
+        raise ValueError(f"The {label} must be 25 MB or smaller")
+    return file_data
+
+
+def write_attachment_file(storage_key, file_data):
+    final_path = attachment_path(storage_key)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = final_path.with_name(f".{final_path.name}.{uuid.uuid4()}.tmp")
+    with temporary_path.open("xb") as file_handle:
+        file_handle.write(file_data)
+    os.replace(temporary_path, final_path)
+    return final_path
 
 
 def matching_lehr_id(con, gebet_date, text_id, gebet_id=None):
@@ -1054,7 +1234,21 @@ def attachment_backup_rows(con):
         ):
             record = dict(row)
             record["category"] = category
+            record["variant"] = "original"
             rows.append(record)
+    for row in con.execute(
+        """SELECT id, text_id AS owner_id, display_name AS original_file_name,
+                  display_storage_key AS storage_key,
+                  display_byte_size AS byte_size,
+                  display_sha256 AS sha256
+             FROM text_attachments
+            WHERE display_storage_key IS NOT NULL
+            ORDER BY display_storage_key"""
+    ):
+        record = dict(row)
+        record["category"] = "texts"
+        record["variant"] = "display"
+        rows.append(record)
     return rows
 
 
@@ -1082,6 +1276,13 @@ def backup_overview():
             for table in (
                 "service_attachments", "text_attachments", "vorrade_attachments"
             )
+        )
+        pdf_bytes += int(
+            con.execute(
+                """SELECT COALESCE(SUM(display_byte_size), 0)
+                     FROM text_attachments"""
+            ).fetchone()[0]
+            or 0
         )
         last_raw = metadata_value(con, LAST_SUCCESSFUL_BACKUP_KEY)
         try:
@@ -1220,7 +1421,7 @@ def create_backup_job(job_id):
                     source_path = attachment_path(attachment["storage_key"])
                     if not source_path.is_file():
                         raise RuntimeError(
-                            f"A PDF File Is Missing (File ID {attachment['id']})."
+                            f"An Attachment File Is Missing (File ID {attachment['id']})."
                         )
                     destination = staged_uploads / attachment["storage_key"]
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1232,7 +1433,7 @@ def create_backup_job(job_id):
                         ) from exc
 
         check_backup_cancelled(job)
-        set_backup_job(job_id, stage="VERIFYING_PDFS")
+        set_backup_job(job_id, stage="VERIFYING_ATTACHMENTS")
         snapshot = sqlite3.connect(snapshot_path)
         try:
             snapshot.row_factory = sqlite3.Row
@@ -1251,18 +1452,19 @@ def create_backup_job(job_id):
             actual_size = staged_path.stat().st_size
             if actual_size != int(attachment["byte_size"]):
                 raise RuntimeError(
-                    f"A PDF File Has An Unexpected Size (File ID {attachment['id']})."
+                    f"An Attachment File Has An Unexpected Size (File ID {attachment['id']})."
                 )
             actual_hash = file_sha256(staged_path, job["cancelEvent"])
             if actual_hash.lower() != str(attachment["sha256"]).lower():
                 raise RuntimeError(
-                    f"A PDF File Failed Verification (File ID {attachment['id']})."
+                    f"An Attachment File Failed Verification (File ID {attachment['id']})."
                 )
             manifest_files.append(
                 {
                     "id": attachment["id"],
                     "ownerId": attachment["owner_id"],
                     "category": attachment["category"],
+                    "variant": attachment["variant"],
                     "originalFileName": attachment["original_file_name"],
                     "storageKey": attachment["storage_key"],
                     "byteSize": actual_size,
@@ -1281,7 +1483,10 @@ def create_backup_job(job_id):
             "dataPath": "/app/data",
             "databaseIntegrity": "passed",
             "counts": counts,
-            "pdfCount": len(manifest_files),
+            "pdfCount": sum(
+                1 for attachment in attachments
+                if attachment["variant"] == "original"
+            ),
             "pdfBytes": sum(item["byteSize"] for item in manifest_files),
             "files": manifest_files,
         }
@@ -1320,7 +1525,10 @@ def create_backup_job(job_id):
             status="READY",
             stage="READY_TO_DOWNLOAD",
             byteSize=byte_size,
-            pdfCount=len(manifest_files),
+            pdfCount=sum(
+                1 for attachment in attachments
+                if attachment["variant"] == "original"
+            ),
             counts=counts,
             sha256=file_sha256(zip_path, job["cancelEvent"]),
             finishedEpoch=time.time(),
@@ -2437,25 +2645,39 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"error": str(exc)}, 500)
 
     def create_text_attachment(self):
-        final_path = None
+        written_paths = []
         try:
             body = self.body()
             text_id = str(body.get("textId", "")).strip()
             file_name = str(body.get("fileName", "")).strip()
-            mime_type = str(body.get("mimeType", "")).strip().lower()
             encoded_data = str(body.get("data", "")).strip()
             if not text_id or not file_name or not encoded_data:
-                return self.json({"error": "Text and PDF file are required"}, 400)
-            if mime_type not in ("application/pdf", ""):
-                return self.json({"error": "Only PDF files can be attached"}, 400)
-            try:
-                file_data = base64.b64decode(encoded_data, validate=True)
-            except (binascii.Error, ValueError):
-                return self.json({"error": "The PDF data is invalid"}, 400)
-            if len(file_data) > MAX_PDF_BYTES:
-                return self.json({"error": "PDF files must be 25 MB or smaller"}, 413)
-            if not file_data.startswith(b"%PDF-"):
-                return self.json({"error": "The selected file is not a valid PDF"}, 400)
+                return self.json({"error": "Text and attachment file are required"}, 400)
+            file_data = decoded_attachment_data(
+                encoded_data, "selected attachment", MAX_ATTACHMENT_BYTES
+            )
+            detected_mime = detected_attachment_mime(file_data)
+            requested_mime = str(body.get("mimeType", "")).strip().lower()
+            if not detected_mime or (
+                requested_mime and requested_mime != detected_mime
+            ):
+                return self.json(
+                    {"error": "The selected file is not a supported PDF or photo"},
+                    400,
+                )
+
+            display_data = None
+            display_mime = None
+            if detected_mime != "application/pdf":
+                display_data = decoded_attachment_data(
+                    body.get("displayData"), "optimized photo", MAX_DISPLAY_BYTES
+                )
+                display_mime = detected_attachment_mime(display_data)
+                if display_mime not in DISPLAY_IMAGE_MIMES:
+                    return self.json(
+                        {"error": "The optimized photo is not a supported image"},
+                        400,
+                    )
 
             with connect() as con:
                 owner = con.execute(
@@ -2464,63 +2686,248 @@ class Handler(BaseHTTPRequestHandler):
                 if not owner:
                     return self.json({"error": "Text not found"}, 404)
                 attachment_id = str(uuid.uuid4())
-                storage_key = f"texts/{text_id}/{attachment_id}.pdf"
-                final_path = attachment_path(storage_key)
-                final_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary_path = final_path.with_suffix(".tmp")
-                with temporary_path.open("xb") as file_handle:
-                    file_handle.write(file_data)
-                os.replace(temporary_path, final_path)
+                extension = ATTACHMENT_MIME_EXTENSIONS[detected_mime]
+                storage_key = f"texts/{text_id}/{attachment_id}-original{extension}"
+                written_paths.append(write_attachment_file(storage_key, file_data))
+                display_storage_key = None
+                if display_data is not None:
+                    display_extension = ATTACHMENT_MIME_EXTENSIONS[display_mime]
+                    display_storage_key = (
+                        f"texts/{text_id}/{attachment_id}-display{display_extension}"
+                    )
+                    written_paths.append(
+                        write_attachment_file(display_storage_key, display_data)
+                    )
+                sort_order = int(
+                    con.execute(
+                        """SELECT COALESCE(MAX(sort_order), 0) + 1
+                             FROM text_attachments WHERE text_id = ?""",
+                        (text_id,),
+                    ).fetchone()[0]
+                )
+                stamp = now()
+                display_name = attachment_file_name(
+                    body.get("displayName"), Path(file_name).name
+                )
                 con.execute(
                     """INSERT INTO text_attachments
-                       (id, text_id, original_file_name, storage_key, mime_type,
-                        byte_size, sha256, created_at)
-                       VALUES (?, ?, ?, ?, 'application/pdf', ?, ?, ?)""",
+                       (id, text_id, original_file_name, display_name, storage_key,
+                        mime_type, byte_size, sha256, display_storage_key,
+                        display_mime_type, display_byte_size, display_sha256,
+                        sort_order, crop_json, rotation_degrees, last_page,
+                        last_offset, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                               1, 0, ?, ?)""",
                     (
                         attachment_id,
                         text_id,
-                        Path(file_name).name,
+                        attachment_file_name(file_name, "Attachment"),
+                        display_name,
                         storage_key,
+                        detected_mime,
                         len(file_data),
                         hashlib.sha256(file_data).hexdigest(),
-                        now(),
+                        display_storage_key,
+                        display_mime,
+                        len(display_data) if display_data is not None else None,
+                        (
+                            hashlib.sha256(display_data).hexdigest()
+                            if display_data is not None else None
+                        ),
+                        sort_order,
+                        json.dumps(body.get("crop")) if body.get("crop") else None,
+                        int(body.get("rotation", 0)) % 360,
+                        stamp,
+                        stamp,
                     ),
                 )
-                con.commit()
                 record = next(
                     row
                     for row in text_attachment_rows(con, text_id)
                     if row["id"] == attachment_id
                 )
+                con.commit()
                 self.json(record, 201)
+        except ValueError as exc:
+            for file_path in written_paths:
+                file_path.unlink(missing_ok=True)
+            self.json({"error": str(exc)}, 400)
         except Exception as exc:
-            if final_path:
-                final_path.unlink(missing_ok=True)
+            for file_path in written_paths:
+                file_path.unlink(missing_ok=True)
             self.json({"error": str(exc)}, 500)
 
-    def send_text_attachment(self, attachment_id, download=False):
+    def update_text_attachment(self):
+        new_display_path = None
+        try:
+            body = self.body()
+            attachment_id = str(body.get("id", "")).strip()
+            action = str(body.get("action", "")).strip().upper()
+            if not attachment_id and action != "REORDER":
+                return self.json({"error": "Attachment id is required"}, 400)
+            with connect() as con:
+                if action == "RENAME":
+                    display_name = attachment_file_name(
+                        body.get("displayName"), "Attachment"
+                    )
+                    result = con.execute(
+                        """UPDATE text_attachments SET display_name = ?, updated_at = ?
+                             WHERE id = ?""",
+                        (display_name, now(), attachment_id),
+                    )
+                    if not result.rowcount:
+                        return self.json({"error": "Attachment not found"}, 404)
+                elif action == "POSITION":
+                    last_page = max(1, int(body.get("lastPage", 1)))
+                    last_offset = float(body.get("lastOffset", 0))
+                    if last_offset < 0 or last_offset > 1:
+                        return self.json({"error": "Invalid reading position"}, 400)
+                    result = con.execute(
+                        """UPDATE text_attachments
+                              SET last_page = ?, last_offset = ?, updated_at = ?
+                            WHERE id = ?""",
+                        (last_page, last_offset, now(), attachment_id),
+                    )
+                    if not result.rowcount:
+                        return self.json({"error": "Attachment not found"}, 404)
+                elif action == "REORDER":
+                    text_id = str(body.get("textId", "")).strip()
+                    ids = body.get("ids")
+                    if not text_id or not isinstance(ids, list) or not ids:
+                        return self.json({"error": "Attachment order is required"}, 400)
+                    current_ids = [
+                        row["id"]
+                        for row in con.execute(
+                            """SELECT id FROM text_attachments
+                                 WHERE text_id = ? ORDER BY sort_order""",
+                            (text_id,),
+                        )
+                    ]
+                    if len(ids) != len(set(ids)) or set(ids) != set(current_ids):
+                        return self.json({"error": "Attachment order is invalid"}, 400)
+                    con.execute(
+                        """UPDATE text_attachments SET sort_order = sort_order + 1000000
+                             WHERE text_id = ?""",
+                        (text_id,),
+                    )
+                    stamp = now()
+                    for index, ordered_id in enumerate(ids, 1):
+                        con.execute(
+                            """UPDATE text_attachments
+                                  SET sort_order = ?, updated_at = ?
+                                WHERE id = ? AND text_id = ?""",
+                            (index, stamp, ordered_id, text_id),
+                        )
+                elif action == "PHOTO_EDIT":
+                    display_data = decoded_attachment_data(
+                        body.get("displayData"), "optimized photo", MAX_DISPLAY_BYTES
+                    )
+                    display_mime = detected_attachment_mime(display_data)
+                    if display_mime not in DISPLAY_IMAGE_MIMES:
+                        return self.json({"error": "Invalid optimized photo"}, 400)
+                    attachment = con.execute(
+                        """SELECT text_id, mime_type, display_storage_key
+                             FROM text_attachments WHERE id = ?""",
+                        (attachment_id,),
+                    ).fetchone()
+                    if not attachment:
+                        return self.json({"error": "Attachment not found"}, 404)
+                    if attachment["mime_type"] == "application/pdf":
+                        return self.json({"error": "PDF files cannot be cropped"}, 400)
+                    extension = ATTACHMENT_MIME_EXTENSIONS[display_mime]
+                    display_key = (
+                        f"texts/{attachment['text_id']}/{attachment_id}-display-"
+                        f"{uuid.uuid4().hex}{extension}"
+                    )
+                    new_display_path = write_attachment_file(display_key, display_data)
+                    old_display_key = attachment["display_storage_key"]
+                    con.execute(
+                        """UPDATE text_attachments
+                              SET display_storage_key = ?, display_mime_type = ?,
+                                  display_byte_size = ?, display_sha256 = ?,
+                                  display_name = ?, crop_json = ?,
+                                  rotation_degrees = ?, updated_at = ?
+                            WHERE id = ?""",
+                        (
+                            display_key,
+                            display_mime,
+                            len(display_data),
+                            hashlib.sha256(display_data).hexdigest(),
+                            attachment_file_name(
+                                body.get("displayName"), "Photo"
+                            ),
+                            json.dumps(body.get("crop")) if body.get("crop") else None,
+                            int(body.get("rotation", 0)) % 360,
+                            now(),
+                            attachment_id,
+                        ),
+                    )
+                else:
+                    return self.json({"error": "Invalid attachment action"}, 400)
+                con.commit()
+                if action == "PHOTO_EDIT":
+                    new_display_path = None
+                if action == "REORDER":
+                    return self.json(text_attachment_rows(con, text_id))
+                record = con.execute(
+                    "SELECT text_id FROM text_attachments WHERE id = ?",
+                    (attachment_id,),
+                ).fetchone()
+                response = next(
+                    row
+                    for row in text_attachment_rows(con, record["text_id"])
+                    if row["id"] == attachment_id
+                )
+            if action == "PHOTO_EDIT" and old_display_key:
+                try:
+                    attachment_path(old_display_key).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return self.json(response)
+        except (TypeError, ValueError) as exc:
+            if new_display_path:
+                new_display_path.unlink(missing_ok=True)
+            return self.json({"error": str(exc)}, 400)
+        except Exception as exc:
+            if new_display_path:
+                new_display_path.unlink(missing_ok=True)
+            return self.json({"error": str(exc)}, 500)
+
+    def send_text_attachment(self, attachment_id, download=False, original=False):
         with connect() as con:
             attachment = con.execute(
-                """SELECT original_file_name, storage_key, byte_size
+                """SELECT original_file_name, display_name, storage_key, mime_type,
+                          display_storage_key, display_mime_type
                      FROM text_attachments WHERE id = ?""",
                 (attachment_id,),
             ).fetchone()
         if not attachment:
-            return self.json({"error": "PDF attachment not found"}, 404)
+            return self.json({"error": "Attachment not found"}, 404)
+        use_original = download or original or attachment["mime_type"] == "application/pdf"
+        storage_key = (
+            attachment["storage_key"]
+            if use_original
+            else attachment["display_storage_key"]
+        )
+        mime_type = (
+            attachment["mime_type"]
+            if use_original
+            else attachment["display_mime_type"]
+        )
         try:
-            file_path = attachment_path(attachment["storage_key"])
+            file_path = attachment_path(storage_key)
             file_data = file_path.read_bytes()
         except (OSError, ValueError):
-            return self.json({"error": "The PDF file could not be read"}, 404)
+            return self.json({"error": "The attachment file could not be read"}, 404)
         safe_name = (
-            attachment["original_file_name"]
+            (attachment["original_file_name"] if download else attachment["display_name"])
             .replace('"', "")
             .replace("\r", "")
             .replace("\n", "")
         )
         disposition = "attachment" if download else "inline"
         self.send_response(200)
-        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(file_data)))
         self.send_header("Content-Disposition", f'{disposition}; filename="{safe_name}"')
         self.send_header("Access-Control-Allow-Origin", self.allowed_origin())
@@ -2666,6 +3073,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_text_attachment(
                     attachment_id,
                     str(parameters.get("download", [""])[0]) == "1",
+                    str(parameters.get("original", [""])[0]) == "1",
                 )
             text_id = str(parameters.get("textId", [""])[0]).strip()
             if not text_id:
@@ -2800,6 +3208,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.update_text()
         if path == "/tags":
             return self.update_tag()
+        if path == "/text-attachments":
+            return self.update_text_attachment()
         if path != "/services":
             return self.json({"error": "Not found"}, 404)
         try:
@@ -2978,11 +3388,16 @@ class Handler(BaseHTTPRequestHandler):
                             409,
                         )
                     attachment_paths = [
-                        attachment_path(row["storage_key"])
+                        attachment_path(storage_key)
                         for row in con.execute(
-                            "SELECT storage_key FROM text_attachments WHERE text_id = ?",
+                            """SELECT storage_key, display_storage_key
+                                 FROM text_attachments WHERE text_id = ?""",
                             (text_id,),
                         )
+                        for storage_key in (
+                            row["storage_key"], row["display_storage_key"]
+                        )
+                        if storage_key
                     ]
                     con.execute("DELETE FROM texts WHERE id = ?", (text_id,))
                     con.commit()
@@ -2999,19 +3414,27 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.body()
                 attachment_id = str(body.get("id", "")).strip()
                 if not attachment_id:
-                    return self.json({"error": "PDF attachment id is required"}, 400)
+                    return self.json({"error": "Attachment id is required"}, 400)
                 with connect() as con:
                     attachment = con.execute(
-                        "SELECT storage_key FROM text_attachments WHERE id = ?",
+                        """SELECT storage_key, display_storage_key
+                             FROM text_attachments WHERE id = ?""",
                         (attachment_id,),
                     ).fetchone()
                     if not attachment:
-                        return self.json({"error": "PDF attachment not found"}, 404)
+                        return self.json({"error": "Attachment not found"}, 404)
                     con.execute(
                         "DELETE FROM text_attachments WHERE id = ?", (attachment_id,)
                     )
                     con.commit()
-                attachment_path(attachment["storage_key"]).unlink(missing_ok=True)
+                for storage_key in (
+                    attachment["storage_key"], attachment["display_storage_key"]
+                ):
+                    if storage_key:
+                        try:
+                            attachment_path(storage_key).unlink(missing_ok=True)
+                        except OSError:
+                            pass
                 return self.json({"id": attachment_id})
             except Exception as exc:
                 return self.json({"error": str(exc)}, 500)

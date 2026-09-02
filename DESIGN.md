@@ -285,6 +285,7 @@ sermon-register/
 - Version 0.15.0 makes Text identity explicit when editing services. Renaming preserves the Text ID and all related content and history; selecting an existing Text relinks only the service; creating a separate Text requires an explicit choice. Text-only edits to saved services never create or recalculate Lehr progress.
 - Version 0.15.1 counts sermon starts in Text usage: each Lehr or Gebet progression start counts once, continuation Gebets do not count, and legacy unlinked Gebets count without modifying their saved records. Last Used follows the latest counted start.
 - Version 0.16.0 adds a read-only Usage History to the Text editor. It lists every counted sermon start by date and service type, newest first, while keeping the Text list compact.
+- Version 0.17.0 adds PDFs and phone photos to Text records in one ordered attachment list. Photos retain an untouched original plus an optimized viewing copy, support review/crop/rotate, and open with PDFs in a private full-screen viewer that remembers reading position across devices.
 - Renaming a Text from the Text library into an existing name is a reviewed merge. Services, Lehr progress, tags, and PDFs move to the surviving record. Blank fields are filled automatically, while conflicting description, Scripture Reference, Songs For This Sermon, and Notes values require the user to choose which value survives.
 - Empty Text records are removed only when no service or Lehr progress references them and they contain no description, Scripture Reference, Songs For This Sermon, notes, tags, or PDFs. Manual deletion provides a stronger content-specific warning.
 - Before packaging, the server runs SQLite `quick_check`, creates an online SQLite snapshot, pins the immutable PDF files on the same data volume, and verifies every recorded PDF's size and SHA-256 hash. A validation or free-space failure stops the backup without changing register data.
@@ -366,9 +367,9 @@ Preparation now is limited to clean relational data, stable IDs, attachment meta
 - Add Lehr/Gebet-specific validation, filters, sorting, and service detail/history.
 - Support Lehr- or Gebet-started progress, nine-month matching, ordered continuations, and explicit completion.
 
-### Stage 4 — private PDFs
+### Stage 4 — private attachments
 
-- Add multi-PDF upload, list, download, rename/describe, and deliberate removal for Texts, services, and Vorraden.
+- Add multi-PDF and photo upload, list, viewing, download, rename, ordering, and deliberate removal. Version 0.17.0 implements the reusable viewer and photo workflow for Texts first; services and Vorraden follow.
 - Add signature/size validation, opaque paths, hashes, and authorization tests.
 
 ### Stage 5 — search and usability
@@ -385,6 +386,7 @@ Preparation now is limited to clean relational data, stable IDs, attachment meta
 - Ship identity-aware Text rename, relink, merge, and safe cleanup behavior in version 0.15.0.
 - Count Lehr starts, Gebet starts, and legacy unlinked Gebets correctly in Text usage in version 0.15.1.
 - Show the counted starts as a compact read-only Usage History in the Text editor in version 0.16.0.
+- Add the private PDF/photo viewer and phone photo workflow for Text records in version 0.17.0.
 - Complete a documented isolated restore test, then add the guarded in-app Restore workflow.
 - Add a scheduled off-server destination using the same backup engine and archive format.
 - Add update, migration, and troubleshooting instructions for a non-expert maintainer.

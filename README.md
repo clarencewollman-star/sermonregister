@@ -30,7 +30,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Docker Compose always pulls the latest `main` image from `ghcr.io/clarencewollman-star/sermonregister:main`. The current image contains application version `0.4.0`. Open <http://localhost:3810>. The web app securely forwards database requests to SQLite inside the same container. The host directory `/docker/sermonregister/data` is mounted into the container, so database records survive image and container replacement.
+Docker Compose always pulls the latest `main` image from `ghcr.io/clarencewollman-star/sermonregister:main`. Open <http://localhost:3810>. The web app securely forwards database requests to SQLite inside the same container. The host directory `/docker/sermonregister/data` is mounted into the container, so database records survive image and container replacement.
 
 The `main` image is refreshed whenever the GitHub Actions publish job succeeds on the `main` branch. If the GitHub package is private, sign in first with `docker login ghcr.io`.
 
@@ -48,11 +48,13 @@ The repository's package visibility settings determine who can download that ima
 
 ## Application version
 
-The current release is `0.16.0`. It is shown in the application header, stored in the image's OCI version label, and published as the GHCR tag `0.16.0`. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
+The current preview release is `0.17.0`. It is shown in the application header, stored in the image's OCI version label, and published as the matching GHCR tag after it is approved and pushed. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
 
 When editing an existing service, the Text field now identifies reusable Text records by database ID. A correction can rename the same Text everywhere without losing descriptions, Scripture references, tags, notes, PDFs, service history, or Lehr progress. Selecting another existing Text relinks the service, while an explicit choice creates a separate Text. Existing services do not start or recalculate Lehr progress merely because their Text was edited.
 
-The Text editor can safely merge into an existing Text name. Services, Lehr progress, tags, and PDFs are combined automatically; conflicting information fields require an explicit choice. Empty unused Texts are removed after service relinks or deletions, while any Text containing information is preserved.
+The Text editor can safely merge into an existing Text name. Services, Lehr progress, tags, and attachments are combined automatically; conflicting information fields require an explicit choice. Empty unused Texts are removed after service relinks or deletions, while any Text containing information is preserved.
+
+Version 0.17.0 adds private PDF and photo attachments to Text records. Phone photos can be reviewed, cropped, rotated, and renamed before saving. The untouched original and an optimized viewing copy are both retained and included in full backups. The built-in full-screen viewer supports continuous PDF pages, photo viewing, attachment navigation, manual ordering, and a reading position that follows the database between devices.
 
 ## Private CSV Import
 

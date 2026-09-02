@@ -12,9 +12,68 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from database import server as database_server
+
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER = ROOT / "database" / "server.py"
+
+
+class AttachmentSchemaMigrationTest(unittest.TestCase):
+    def test_version_nine_pdf_attachment_is_preserved(self):
+        with tempfile.TemporaryDirectory(prefix="sermon-attachment-migration-") as folder:
+            database_path = Path(folder) / "sermon-register.db"
+            connection = sqlite3.connect(database_path)
+            connection.row_factory = sqlite3.Row
+            connection.executescript(
+                """
+                CREATE TABLE texts (
+                  id TEXT PRIMARY KEY,
+                  text TEXT NOT NULL COLLATE NOCASE,
+                  description TEXT,
+                  tags TEXT,
+                  scripture_reference TEXT,
+                  songs_for_text TEXT,
+                  notes TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE text_attachments (
+                  id TEXT PRIMARY KEY,
+                  text_id TEXT NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+                  original_file_name TEXT NOT NULL,
+                  storage_key TEXT NOT NULL UNIQUE,
+                  mime_type TEXT NOT NULL CHECK (mime_type = 'application/pdf'),
+                  byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+                  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                  created_at TEXT NOT NULL
+                );
+                INSERT INTO texts
+                  (id, text, created_at, updated_at)
+                VALUES ('text-1', 'Existing Text', '2026-01-01', '2026-01-01');
+                INSERT INTO text_attachments
+                  (id, text_id, original_file_name, storage_key, mime_type,
+                   byte_size, sha256, created_at)
+                VALUES ('file-1', 'text-1', 'existing.pdf',
+                        'texts/text-1/file-1.pdf', 'application/pdf', 12,
+                        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                        '2026-01-01');
+                PRAGMA user_version = 9;
+                """
+            )
+            database_server.ensure_schema(connection, database_path)
+            migrated = connection.execute(
+                """SELECT original_file_name, display_name, mime_type, sort_order,
+                          display_storage_key, last_page
+                     FROM text_attachments WHERE id = 'file-1'"""
+            ).fetchone()
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 10)
+            self.assertEqual(migrated["display_name"], "existing.pdf")
+            self.assertEqual(migrated["mime_type"], "application/pdf")
+            self.assertEqual(migrated["sort_order"], 1)
+            self.assertIsNone(migrated["display_storage_key"])
+            self.assertEqual(migrated["last_page"], 1)
+            connection.close()
 
 
 class TextIdentityApiTest(unittest.TestCase):
@@ -367,6 +426,100 @@ class TextIdentityApiTest(unittest.TestCase):
                 {"id": mixed_gebet["id"], "date": "2026-03-01", "type": "GEBET"},
             ],
         )
+
+    def test_z_photo_pdf_attachment_management_and_backup_files(self):
+        text = self.request(
+            "POST",
+            "/texts",
+            {"text": "Attachment Test", "description": "", "tags": []},
+            201,
+        )
+        original_photo = b"\xff\xd8\xff\xe0original-photo"
+        display_photo = b"\xff\xd8\xff\xe0optimized-photo"
+        photo = self.request(
+            "POST",
+            "/text-attachments",
+            {
+                "textId": text["id"],
+                "fileName": "notes.heic",
+                "displayName": "Attachment Test - Notes.jpg",
+                "mimeType": "image/jpeg",
+                "data": base64.b64encode(original_photo).decode("ascii"),
+                "displayData": base64.b64encode(display_photo).decode("ascii"),
+                "displayMimeType": "image/jpeg",
+                "crop": {"unit": "%", "x": 0, "y": 0, "width": 100, "height": 100},
+                "rotation": 0,
+            },
+            201,
+        )
+        pdf = self.request(
+            "POST",
+            "/text-attachments",
+            {
+                "textId": text["id"],
+                "fileName": "sermon.pdf",
+                "displayName": "Sermon Notes.pdf",
+                "mimeType": "application/pdf",
+                "data": base64.b64encode(b"%PDF-1.4\n%%EOF\n").decode("ascii"),
+            },
+            201,
+        )
+        attachments = self.request(
+            "GET", f"/text-attachments?textId={text['id']}"
+        )
+        self.assertEqual([row["id"] for row in attachments], [photo["id"], pdf["id"]])
+        self.assertEqual(photo["mime_type"], "image/jpeg")
+        self.assertEqual(photo["display_name"], "Attachment Test - Notes.jpg")
+
+        renamed = self.request(
+            "PUT",
+            "/text-attachments",
+            {"id": photo["id"], "action": "RENAME", "displayName": "My Notes.jpg"},
+        )
+        self.assertEqual(renamed["display_name"], "My Notes.jpg")
+        positioned = self.request(
+            "PUT",
+            "/text-attachments",
+            {"id": pdf["id"], "action": "POSITION", "lastPage": 3, "lastOffset": 0.4},
+        )
+        self.assertEqual(positioned["last_page"], 3)
+        reordered = self.request(
+            "PUT",
+            "/text-attachments",
+            {
+                "textId": text["id"],
+                "action": "REORDER",
+                "ids": [pdf["id"], photo["id"]],
+            },
+        )
+        self.assertEqual([row["id"] for row in reordered], [pdf["id"], photo["id"]])
+
+        with urlopen(
+            f"http://127.0.0.1:{self.port}/text-attachments?fileId={photo['id']}",
+            timeout=5,
+        ) as response:
+            self.assertEqual(response.headers.get_content_type(), "image/jpeg")
+            self.assertEqual(response.read(), display_photo)
+        with urlopen(
+            f"http://127.0.0.1:{self.port}/text-attachments?fileId={photo['id']}&original=1",
+            timeout=5,
+        ) as response:
+            self.assertEqual(response.read(), original_photo)
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            storage_keys = connection.execute(
+                """SELECT storage_key, display_storage_key
+                     FROM text_attachments WHERE id = ?""",
+                (photo["id"],),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertTrue((self.data_path / "uploads" / storage_keys[0]).is_file())
+        self.assertTrue((self.data_path / "uploads" / storage_keys[1]).is_file())
+        self.request("DELETE", "/text-attachments", {"id": photo["id"]})
+        self.assertFalse((self.data_path / "uploads" / storage_keys[0]).exists())
+        self.assertFalse((self.data_path / "uploads" / storage_keys[1]).exists())
 
 
 if __name__ == "__main__":

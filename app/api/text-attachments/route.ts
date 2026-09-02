@@ -7,7 +7,7 @@ const databaseUrl = (request: Request) => {
 };
 
 async function forward(
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   request: Request,
 ) {
   try {
@@ -41,6 +41,10 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   return forward("POST", request);
+}
+
+export async function PUT(request: Request) {
+  return forward("PUT", request);
 }
 
 export async function DELETE(request: Request) {
