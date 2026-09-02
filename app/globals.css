@@ -919,6 +919,13 @@ button.nav-link {
   border-radius: 0;
 }
 
+.library-editor-form {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .library-editor-modal .modal-header,
 .library-editor-modal .modal-footer {
   flex: 0 0 auto;
@@ -926,7 +933,14 @@ button.nav-link {
 }
 
 .library-editor-modal .modal-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
   padding: clamp(1rem, 2.5vw, 2.5rem);
+}
+
+.text-editor-save-status {
+  display: block;
 }
 
 .library-editor-content {
@@ -1542,8 +1556,26 @@ button.nav-link {
     border-radius: 0;
   }
 
+  .library-editor-modal .modal-header {
+    padding: calc(0.45rem + env(safe-area-inset-top)) 0.75rem 0.45rem;
+  }
+
+  .library-editor-modal .modal-header .text-editor-eyebrow {
+    display: none;
+  }
+
+  .library-editor-modal .modal-title {
+    font-size: 1rem;
+  }
+
+  .library-editor-modal .text-editor-save-status {
+    font-size: 0.7rem;
+    line-height: 1.1;
+  }
+
   .library-editor-modal .modal-footer {
     gap: 0.5rem;
+    padding: 0.45rem 0.75rem calc(0.45rem + env(safe-area-inset-bottom));
   }
 
   .text-merge-modal {

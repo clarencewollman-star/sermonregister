@@ -5040,12 +5040,17 @@ export default function Home() {
             <div className="modal-content card card-primary card-outline mb-0">
               <div className="modal-header">
                 <div>
-                  <small className="text-uppercase text-body-secondary">
+                  <small className="text-editor-eyebrow text-uppercase text-body-secondary">
                     Reusable Text Record
                   </small>
                   <h5 className="modal-title" id="text-editor-title">
                     {textEditor === "new" ? "Add Text" : "Edit Text"}
                   </h5>
+                  {textEditor !== "new" && (
+                    <small className="text-editor-save-status text-body-secondary">
+                      {textAutoSaveStatus || "Changes Save Automatically."}
+                    </small>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -5055,6 +5060,7 @@ export default function Home() {
                 />
               </div>
               <form
+                className="library-editor-form"
                 ref={textFormRef}
                 key={textEditor === "new" ? "new" : textEditor.id}
                 onSubmit={saveText}
@@ -5240,13 +5246,21 @@ export default function Home() {
                   </div>
                   </div>
                 </div>
-                <div
-                  className={`modal-footer ${
-                    textEditor !== "new" ? "justify-content-between" : ""
-                  }`}
-                >
-                  {textEditor !== "new" &&
-                    (textEditor.serviceCount === 0 ? (
+                {(textEditor === "new" || textEditor.serviceCount === 0) && (
+                  <div className="modal-footer justify-content-between">
+                    {textEditor === "new" ? (
+                      <>
+                        <small className="text-body-secondary">
+                          Save This New Text Once To Start Automatic Saving.
+                        </small>
+                        <div>
+                      <button className="btn btn-primary" type="submit">
+                        <i className="bi bi-check-lg me-1" />
+                        Save Text
+                      </button>
+                        </div>
+                      </>
+                    ) : (
                       <button
                         type="button"
                         className="btn btn-danger"
@@ -5255,32 +5269,9 @@ export default function Home() {
                         <i className="bi bi-trash3 me-1" />
                         Delete Text
                       </button>
-                    ) : (
-                      <small className="text-body-secondary">
-                        Used Texts Cannot Be Deleted.
-                      </small>
-                    ))}
-                  <div className="d-flex flex-wrap align-items-center gap-2">
-                    <small className="text-body-secondary align-self-center me-2">
-                      {textEditor === "new"
-                        ? "Save This New Text Once To Start Automatic Saving."
-                        : textAutoSaveStatus || "Changes Save Automatically."}
-                    </small>
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary"
-                      onClick={() => void closeTextEditor()}
-                    >
-                      Close
-                    </button>
-                    {textEditor === "new" && (
-                      <button className="btn btn-primary" type="submit">
-                        <i className="bi bi-check-lg me-1" />
-                        Save Text
-                      </button>
                     )}
                   </div>
-                </div>
+                )}
               </form>
             </div>
           </div>
