@@ -48,13 +48,15 @@ The repository's package visibility settings determine who can download that ima
 
 ## Application version
 
-The current preview release is `0.17.0`. It is shown in the application header, stored in the image's OCI version label, and published as the matching GHCR tag after it is approved and pushed. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
+The current release is `0.17.1`. It is shown in the application header, stored in the image's OCI version label, and published as the matching GHCR tag. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
 
 When editing an existing service, the Text field now identifies reusable Text records by database ID. A correction can rename the same Text everywhere without losing descriptions, Scripture references, tags, notes, PDFs, service history, or Lehr progress. Selecting another existing Text relinks the service, while an explicit choice creates a separate Text. Existing services do not start or recalculate Lehr progress merely because their Text was edited.
 
 The Text editor can safely merge into an existing Text name. Services, Lehr progress, tags, and attachments are combined automatically; conflicting information fields require an explicit choice. Empty unused Texts are removed after service relinks or deletions, while any Text containing information is preserved.
 
 Version 0.17.0 adds private PDF and photo attachments to Text records. Phone photos can be reviewed, cropped, rotated, and renamed before saving. The untouched original and an optimized viewing copy are both retained and included in full backups. The built-in full-screen viewer supports continuous PDF pages, photo viewing, attachment navigation, manual ordering, and a reading position that follows the database between devices.
+
+Version 0.17.1 fixes closing the attachment viewer on iPhone. The viewer now closes immediately while saving reading position in the background, includes a second Close control in the bottom toolbar, and respects the iPhone safe areas at the top and bottom.
 
 ## Private CSV Import
 

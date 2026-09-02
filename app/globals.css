@@ -1322,6 +1322,21 @@ button.nav-link {
   background: #25282d;
 }
 
+.attachment-viewer-toolbar {
+  padding-top: calc(0.75rem + env(safe-area-inset-top));
+}
+
+.attachment-viewer-footer {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+}
+
+.attachment-viewer-footer-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+}
+
 .attachment-viewer-title {
   display: flex;
   min-width: 0;
@@ -1486,7 +1501,7 @@ button.nav-link {
   .attachment-viewer-toolbar {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    padding: 0.5rem;
+    padding: calc(0.5rem + env(safe-area-inset-top)) 0.5rem 0.5rem;
   }
 
   .attachment-viewer-title {
@@ -1503,8 +1518,13 @@ button.nav-link {
   }
 
   .attachment-viewer-footer {
-    padding: 0.45rem;
+    padding: 0.45rem 0.45rem calc(0.45rem + env(safe-area-inset-bottom));
     font-size: 0.78rem;
+  }
+
+  .attachment-viewer-footer-center {
+    flex-direction: column;
+    gap: 0.2rem;
   }
 
   .attachment-viewer-footer .btn {

@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import ReactCrop, { type PercentCrop } from "react-image-crop";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type {
   PDFDocumentLoadingTask,
   PDFDocumentProxy,
@@ -20,10 +21,7 @@ let pdfJsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 
 function loadPdfJs() {
   pdfJsPromise ||= import("pdfjs-dist").then((pdfJs) => {
-    pdfJs.GlobalWorkerOptions.workerSrc = new URL(
-      "pdfjs-dist/build/pdf.worker.min.mjs",
-      import.meta.url,
-    ).toString();
+    pdfJs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
     return pdfJs;
   });
   return pdfJsPromise;
@@ -499,10 +497,10 @@ function AttachmentViewer({
     return { page: Number(current.dataset.page || 1), offset };
   }, [attachment.mime_type]);
 
-  async function saveAndClose() {
+  function saveAndClose() {
     const position = readingPosition();
-    await onPosition(attachment.id, position.page, position.offset).catch(() => undefined);
     onClose();
+    void onPosition(attachment.id, position.page, position.offset).catch(() => undefined);
   }
 
   async function move(next: number) {
@@ -516,7 +514,7 @@ function AttachmentViewer({
   return (
     <div className="attachment-viewer" role="dialog" aria-modal="true" aria-label={attachment.display_name}>
       <header className="attachment-viewer-toolbar">
-        <button className="btn btn-outline-light" type="button" onClick={() => void saveAndClose()}>
+        <button className="btn btn-outline-light" type="button" onClick={saveAndClose}>
           <i className="bi bi-arrow-left me-1" />Back To Text
         </button>
         <div className="attachment-viewer-title">
@@ -572,14 +570,19 @@ function AttachmentViewer({
         <button className="btn btn-outline-light" type="button" disabled={index === 0} onClick={() => void move(index - 1)}>
           <i className="bi bi-chevron-left me-1" />Previous Attachment
         </button>
-        <span>
-          {attachment.mime_type === "application/pdf" &&
-          document && documentAttachmentId === attachment.id
-            ? `Page ${page} Of ${document.numPages}`
-            : attachment.mime_type === "application/pdf"
-              ? "Loading PDF"
-              : "Photo"}
-        </span>
+        <div className="attachment-viewer-footer-center">
+          <span>
+            {attachment.mime_type === "application/pdf" &&
+            document && documentAttachmentId === attachment.id
+              ? `Page ${page} Of ${document.numPages}`
+              : attachment.mime_type === "application/pdf"
+                ? "Loading PDF"
+                : "Photo"}
+          </span>
+          <button className="btn btn-light btn-sm" type="button" onClick={saveAndClose}>
+            <i className="bi bi-x-lg me-1" />Close
+          </button>
+        </div>
         <button className="btn btn-outline-light" type="button" disabled={index === attachments.length - 1} onClick={() => void move(index + 1)}>
           Next Attachment<i className="bi bi-chevron-right ms-1" />
         </button>
