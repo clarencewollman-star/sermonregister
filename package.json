@@ -1,6 +1,6 @@
 {
   "name": "sermon-register",
-  "version": "0.17.3",
+  "version": "0.18.0",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "engines": {

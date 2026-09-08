@@ -12,6 +12,7 @@ import {
 import TextAttachmentManager, {
   type TextAttachment,
 } from "./components/TextAttachmentManager";
+import TextPrintReport from "./components/TextPrintReport";
 
 declare const __APP_VERSION__: string;
 
@@ -526,6 +527,68 @@ function textUsageSummary(record: TextRecord) {
   return parts.join(" · ");
 }
 
+function compareTextRecords(
+  left: TextRecord,
+  right: TextRecord,
+  field: TextSortField,
+  direction: "asc" | "desc",
+) {
+  if (field === "tags" && (!left.tags || !right.tags)) {
+    if (!left.tags && !right.tags) return 0;
+    const emptyComparison = !left.tags ? 1 : -1;
+    return direction === "asc" ? emptyComparison : -emptyComparison;
+  }
+
+  const comparison =
+    field === "timesUsed"
+      ? left.timesUsed - right.timesUsed
+      : field === "lastUsed"
+        ? left.lastUsedValue.localeCompare(right.lastUsedValue)
+        : field === "tags"
+          ? left.tags.localeCompare(right.tags, undefined, {
+              numeric: true,
+              sensitivity: "base",
+            })
+          : left.text.localeCompare(right.text, undefined, {
+              numeric: true,
+              sensitivity: "base",
+            });
+  return direction === "asc" ? comparison : -comparison;
+}
+
+function SelectionCheckbox({
+  id,
+  checked,
+  indeterminate = false,
+  label,
+  onChange,
+}: {
+  id?: string;
+  checked: boolean;
+  indeterminate?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+
+  return (
+    <input
+      ref={inputRef}
+      id={id}
+      className="form-check-input text-selection-checkbox"
+      type="checkbox"
+      checked={checked}
+      aria-label={label}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => onChange(event.target.checked)}
+    />
+  );
+}
+
 function statusBadgeClass(status: string) {
   if (status === "Completed" || status === "Completed Lehr") {
     return "text-bg-success";
@@ -1003,6 +1066,12 @@ export default function Home() {
   const [textQuery, setTextQuery] = useState("");
   const [textSort, setTextSort] = useState<TextSortField>("text");
   const [textSortDirection, setTextSortDirection] = useState<"asc" | "desc">("asc");
+  const [textSelectionMode, setTextSelectionMode] = useState(false);
+  const [selectedTextIds, setSelectedTextIds] = useState<string[]>([]);
+  const [textReportOpen, setTextReportOpen] = useState(false);
+  const [textReportTitle, setTextReportTitle] = useState("Selected Texts");
+  const [textReportDate, setTextReportDate] = useState("");
+  const textReportReturnScroll = useRef(0);
   const [textEditor, setTextEditor] = useState<TextRecord | "new" | null>(null);
   const [textEditorTags, setTextEditorTags] = useState<TagRecord[]>([]);
   const [textError, setTextError] = useState("");
@@ -1309,30 +1378,35 @@ export default function Home() {
             .toLowerCase()
             .includes(textQuery.toLowerCase()),
       );
-      return filteredTexts.sort((left, right) => {
-        if (textSort === "tags" && (!left.tags || !right.tags)) {
-          if (!left.tags && !right.tags) return 0;
-          return !left.tags ? 1 : -1;
-        }
-        const comparison =
-          textSort === "timesUsed"
-            ? left.timesUsed - right.timesUsed
-            : textSort === "lastUsed"
-              ? left.lastUsedValue.localeCompare(right.lastUsedValue)
-              : textSort === "tags"
-                ? left.tags.localeCompare(right.tags, undefined, {
-                    numeric: true,
-                    sensitivity: "base",
-                  })
-              : left.text.localeCompare(right.text, undefined, {
-                  numeric: true,
-                  sensitivity: "base",
-                });
-        return textSortDirection === "asc" ? comparison : -comparison;
-      });
+      return filteredTexts.sort((left, right) =>
+        compareTextRecords(left, right, textSort, textSortDirection),
+      );
     },
     [texts, textQuery, textSort, textSortDirection, selectedTagIds],
   );
+
+  const selectedTextIdSet = useMemo(
+    () => new Set(selectedTextIds),
+    [selectedTextIds],
+  );
+
+  const selectedReportTexts = useMemo(
+    () =>
+      texts
+        .filter((record) => selectedTextIdSet.has(record.id))
+        .sort((left, right) =>
+          compareTextRecords(left, right, textSort, textSortDirection),
+        ),
+    [selectedTextIdSet, textSort, textSortDirection, texts],
+  );
+
+  const visibleSelectedCount = useMemo(
+    () => visibleTexts.filter((record) => selectedTextIdSet.has(record.id)).length,
+    [selectedTextIdSet, visibleTexts],
+  );
+
+  const allVisibleTextsSelected =
+    visibleTexts.length > 0 && visibleSelectedCount === visibleTexts.length;
 
   const managedTags = useMemo(
     () =>
@@ -1409,6 +1483,61 @@ export default function Home() {
     setTextSort(field);
     setTextSortDirection(
       field === "timesUsed" || field === "lastUsed" ? "desc" : "asc",
+    );
+  }
+
+  function toggleTextSelection(id: string, checked?: boolean) {
+    setSelectedTextIds((current) => {
+      const shouldSelect = checked ?? !current.includes(id);
+      if (shouldSelect) return current.includes(id) ? current : [...current, id];
+      return current.filter((currentId) => currentId !== id);
+    });
+  }
+
+  function toggleVisibleTextSelection(checked: boolean) {
+    const visibleIds = new Set(visibleTexts.map((record) => record.id));
+    setSelectedTextIds((current) =>
+      checked
+        ? Array.from(new Set([...current, ...visibleIds]))
+        : current.filter((id) => !visibleIds.has(id)),
+    );
+  }
+
+  function clearTextSelection() {
+    setSelectedTextIds([]);
+    setTextReportTitle("Selected Texts");
+  }
+
+  function leaveTextSelectionMode() {
+    if (
+      selectedTextIds.length > 0 &&
+      !window.confirm("Leave Selection Mode And Clear The Selected Texts?")
+    ) {
+      return false;
+    }
+    clearTextSelection();
+    setTextSelectionMode(false);
+    return true;
+  }
+
+  function openTextReport() {
+    if (!selectedTextIds.length) return;
+    textReportReturnScroll.current = window.scrollY;
+    setTextReportDate(
+      new Date().toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }),
+    );
+    setTextReportOpen(true);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+  }
+
+  function closeTextReport() {
+    setTextReportOpen(false);
+    window.requestAnimationFrame(() =>
+      window.scrollTo({ top: textReportReturnScroll.current }),
     );
   }
 
@@ -2300,6 +2429,14 @@ export default function Home() {
   }
 
   function changeSection(section: string) {
+    if (
+      active === "Texts" &&
+      section !== "Texts" &&
+      textSelectionMode &&
+      !leaveTextSelectionMode()
+    ) {
+      return;
+    }
     setActive(section);
     setSidebarOpen(false);
     const url = new URL(window.location.href);
@@ -2365,6 +2502,18 @@ export default function Home() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [closeSongEditor, closeTextEditor, songEditor, textEditor]);
+
+  if (textReportOpen) {
+    return (
+      <TextPrintReport
+        records={selectedReportTexts}
+        title={textReportTitle}
+        preparedDate={textReportDate}
+        onTitleChange={setTextReportTitle}
+        onBack={closeTextReport}
+      />
+    );
+  }
 
   return (
     <div className="app-wrapper">
@@ -3083,6 +3232,20 @@ export default function Home() {
                     </div>
                     <div className="col-auto">
                       <button
+                        className={`btn ${textSelectionMode ? "btn-secondary" : "btn-outline-primary"}`}
+                        type="button"
+                        onClick={() => {
+                          if (textSelectionMode) leaveTextSelectionMode();
+                          else setTextSelectionMode(true);
+                        }}
+                      >
+                        <i className={`bi ${textSelectionMode ? "bi-x-lg" : "bi-check2-square"} me-1`} />
+                        {textSelectionMode ? "Exit Selection" : "Select"}
+                      </button>
+                    </div>
+                    {!textSelectionMode && (
+                    <div className="col-auto">
+                      <button
                         className="btn btn-primary"
                         type="button"
                         onClick={() => {
@@ -3098,6 +3261,7 @@ export default function Home() {
                         Add Text
                       </button>
                     </div>
+                    )}
                   </div>
                   <div className="mobile-text-toolbar d-md-none">
                     <div className="input-group">
@@ -3147,6 +3311,20 @@ export default function Home() {
                         }}
                       />
                       <button
+                        className={`btn flex-shrink-0 ${textSelectionMode ? "btn-secondary" : "btn-outline-primary"}`}
+                        type="button"
+                        onClick={() => {
+                          if (textSelectionMode) leaveTextSelectionMode();
+                          else setTextSelectionMode(true);
+                        }}
+                      >
+                        <i className={`bi ${textSelectionMode ? "bi-x-lg" : "bi-check2-square"}`} />
+                        <span className="visually-hidden">
+                          {textSelectionMode ? "Exit Selection" : "Select Texts"}
+                        </span>
+                      </button>
+                      {!textSelectionMode && (
+                      <button
                         className="btn btn-primary flex-shrink-0"
                         type="button"
                         onClick={() => {
@@ -3161,6 +3339,7 @@ export default function Home() {
                         <i className="bi bi-plus-lg me-1" />
                         Add
                       </button>
+                      )}
                     </div>
                   </div>
                   <div className="d-none d-md-block">
@@ -3178,6 +3357,48 @@ export default function Home() {
                     />
                   </div>
                 </div>
+
+                {textSelectionMode && (
+                  <div className="text-selection-bar border-bottom">
+                    <label
+                      className="text-selection-all"
+                      htmlFor="select-all-visible-texts-toolbar"
+                    >
+                      <SelectionCheckbox
+                        id="select-all-visible-texts-toolbar"
+                        checked={allVisibleTextsSelected}
+                        indeterminate={
+                          visibleSelectedCount > 0 && !allVisibleTextsSelected
+                        }
+                        label="Select All Visible Texts"
+                        onChange={toggleVisibleTextSelection}
+                      />
+                      <span>Select All Visible</span>
+                    </label>
+                    <strong className="text-selection-count">
+                      {selectedTextIds.length} Selected
+                    </strong>
+                    <div className="text-selection-actions">
+                      <button
+                        className="btn btn-sm btn-outline-secondary"
+                        type="button"
+                        disabled={!selectedTextIds.length}
+                        onClick={clearTextSelection}
+                      >
+                        Clear
+                      </button>
+                      <button
+                        className="btn btn-sm btn-primary"
+                        type="button"
+                        disabled={!selectedTextIds.length}
+                        onClick={openTextReport}
+                      >
+                        <i className="bi bi-file-earmark-text me-1" />
+                        Preview Report
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {textError && !textEditor && (
                   <div className="alert alert-danger m-3 mb-0" role="alert">
@@ -3199,22 +3420,35 @@ export default function Home() {
                               : "none"
                           }
                         >
-                          <button
-                            className="sort-header-button"
-                            type="button"
-                            onClick={() => changeTextSort("text")}
-                          >
-                            Text
-                            {textSort === "text" && (
-                              <i
-                                className={`bi ${
-                                  textSortDirection === "asc"
-                                    ? "bi-caret-up-fill"
-                                    : "bi-caret-down-fill"
-                                }`}
+                          <div className="text-heading-with-selection">
+                            {textSelectionMode && (
+                              <SelectionCheckbox
+                                id="select-all-visible-texts-table"
+                                checked={allVisibleTextsSelected}
+                                indeterminate={
+                                  visibleSelectedCount > 0 && !allVisibleTextsSelected
+                                }
+                                label="Select All Visible Texts"
+                                onChange={toggleVisibleTextSelection}
                               />
                             )}
-                          </button>
+                            <button
+                              className="sort-header-button"
+                              type="button"
+                              onClick={() => changeTextSort("text")}
+                            >
+                              Text
+                              {textSort === "text" && (
+                                <i
+                                  className={`bi ${
+                                    textSortDirection === "asc"
+                                      ? "bi-caret-up-fill"
+                                      : "bi-caret-down-fill"
+                                  }`}
+                                />
+                              )}
+                            </button>
+                          </div>
                         </th>
                         <th>Description</th>
                         <th>Scripture Reference</th>
@@ -3304,18 +3538,44 @@ export default function Home() {
                     <tbody>
                       {visibleTexts.map((record) => (
                         <tr
-                          className="service-row"
+                          className={`service-row ${
+                            textSelectionMode && selectedTextIdSet.has(record.id)
+                              ? "table-primary text-row-selected"
+                              : ""
+                          }`}
                           key={record.id}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openTextEditor(record)}
-                          onKeyDown={(event) =>
-                            (event.key === "Enter" || event.key === " ") &&
-                            openTextEditor(record)
+                          role={textSelectionMode ? "checkbox" : "button"}
+                          aria-checked={
+                            textSelectionMode
+                              ? selectedTextIdSet.has(record.id)
+                              : undefined
                           }
+                          tabIndex={0}
+                          onClick={() =>
+                            textSelectionMode
+                              ? toggleTextSelection(record.id)
+                              : openTextEditor(record)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            if (textSelectionMode) toggleTextSelection(record.id);
+                            else openTextEditor(record);
+                          }}
                         >
                           <td className="fw-semibold text-name-cell">
-                            {record.text}
+                            <span className="text-name-with-selection">
+                              {textSelectionMode && (
+                                <SelectionCheckbox
+                                  checked={selectedTextIdSet.has(record.id)}
+                                  label={`Select ${record.text}`}
+                                  onChange={(checked) =>
+                                    toggleTextSelection(record.id, checked)
+                                  }
+                                />
+                              )}
+                              <span>{record.text}</span>
+                            </span>
                           </td>
                           <td className="text-description-cell">
                             {record.description}
@@ -3341,7 +3601,11 @@ export default function Home() {
                                       onKeyDown={(event) => event.stopPropagation()}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        if (tagRecord) setSelectedTagIds([tagRecord.id]);
+                                        if (textSelectionMode) {
+                                          toggleTextSelection(record.id);
+                                        } else if (tagRecord) {
+                                          setSelectedTagIds([tagRecord.id]);
+                                        }
                                       }}
                                     >
                                       {tag}
@@ -3379,16 +3643,44 @@ export default function Home() {
                     const scripture = firstLine(record.scriptureReference);
                     return (
                       <div
-                        role="button"
-                        tabIndex={0}
-                        className="list-group-item list-group-item-action mobile-library-text-row"
-                        key={record.id}
-                        onClick={() => openTextEditor(record)}
-                        onKeyDown={(event) =>
-                          (event.key === "Enter" || event.key === " ") &&
-                          openTextEditor(record)
+                        role={textSelectionMode ? "checkbox" : "button"}
+                        aria-checked={
+                          textSelectionMode
+                            ? selectedTextIdSet.has(record.id)
+                            : undefined
                         }
+                        tabIndex={0}
+                        className={`list-group-item list-group-item-action mobile-library-text-row ${
+                          textSelectionMode ? "is-selecting" : ""
+                        } ${
+                          textSelectionMode && selectedTextIdSet.has(record.id)
+                            ? "text-row-selected"
+                            : ""
+                        }`}
+                        key={record.id}
+                        onClick={() =>
+                          textSelectionMode
+                            ? toggleTextSelection(record.id)
+                            : openTextEditor(record)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") return;
+                          event.preventDefault();
+                          if (textSelectionMode) toggleTextSelection(record.id);
+                          else openTextEditor(record);
+                        }}
                       >
+                        {textSelectionMode && (
+                          <span className="mobile-text-selection-control">
+                            <SelectionCheckbox
+                              checked={selectedTextIdSet.has(record.id)}
+                              label={`Select ${record.text}`}
+                              onChange={(checked) =>
+                                toggleTextSelection(record.id, checked)
+                              }
+                            />
+                          </span>
+                        )}
                         <strong className="mobile-library-text-title">
                           {record.text}
                         </strong>
@@ -3420,7 +3712,11 @@ export default function Home() {
                                     onKeyDown={(event) => event.stopPropagation()}
                                     onClick={(event) => {
                                       event.stopPropagation();
-                                      setSelectedTagIds([tag.id]);
+                                      if (textSelectionMode) {
+                                        toggleTextSelection(record.id);
+                                      } else {
+                                        setSelectedTagIds([tag.id]);
+                                      }
                                     }}
                                   >
                                     {tag.name}
