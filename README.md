@@ -58,7 +58,7 @@ Version 0.17.0 adds private PDF and photo attachments to Text records. Phone pho
 
 Version 0.17.3 streamlines the Text editor on iPhone. Only the editor body scrolls, the top bar is compact, existing Texts show one close control, and the bottom bar appears only when it contains a required Save or Delete action.
 
-Version 0.18.0 adds temporary multi-selection and a compact print preview for Text records. Reports follow the active Text sort, keep selections across searches and tag filters, and use a clean two-column reading list without table dividers. Each entry shows only its available details, including its own tags. Letter portrait pages fit eight detailed records or up to sixteen short records and print through the device's standard print dialog.
+Version 0.18.1 measures the actual rendered height of every selected Text and fits as many as the printable page allows, with no arbitrary record-count limit. Records are numbered down the left column before continuing down the right, and Scripture References may use up to four lines. Reports follow the active Text sort, keep selections across searches and tag filters, and use a clean two-column reading list without table dividers. Each entry shows only its available details, including its own tags, and prints through the device's standard print dialog.
 
 ## Private CSV Import
 
