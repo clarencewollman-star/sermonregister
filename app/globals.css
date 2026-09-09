@@ -104,6 +104,22 @@ button.nav-link {
   white-space: normal;
 }
 
+.reports-icon {
+  display: inline-grid;
+  width: 3rem;
+  height: 3rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.7rem;
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-primary);
+  font-size: 1.35rem;
+}
+
+.report-included-list li + li {
+  margin-top: 0.35rem;
+}
+
 .app-main {
   min-width: 0;
 }
@@ -492,6 +508,236 @@ button.nav-link {
   margin-top: auto;
   padding-top: 0.12in;
   color: #444;
+  font-size: 7.5pt;
+}
+
+.register-report-preview {
+  min-height: 100dvh;
+  background: #dfe3e8;
+  color: #111;
+}
+
+.register-report-toolbar {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: flex;
+  align-items: end;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bs-body-bg);
+}
+
+.register-report-year-control {
+  display: grid;
+  width: 15rem;
+  gap: 0.2rem;
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.register-report-gebet-control {
+  display: inline-flex;
+  min-height: 2.375rem;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--bs-body-color);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.register-report-gebet-control .form-check-input {
+  margin: 0;
+}
+
+.register-report-pages {
+  display: grid;
+  justify-items: center;
+  gap: 1.5rem;
+  padding: 1.5rem;
+}
+
+.register-report-measure-root {
+  position: fixed;
+  z-index: -1;
+  top: 0;
+  left: -10000px;
+  width: 8.5in;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.register-report-sheet {
+  display: flex;
+  width: min(8.5in, calc(100vw - 1rem));
+  height: 11in;
+  min-height: 11in;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding: 0.4in 0.65in;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 0.35rem 1.5rem rgba(0, 0, 0, 0.18);
+  color: #111;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.register-report-measure-sheet {
+  width: 8.5in;
+  height: 11in;
+  min-height: 11in;
+  margin: 0;
+  box-shadow: none;
+}
+
+.register-report-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 0.25in;
+  margin-bottom: 0.12in;
+  padding-bottom: 0.1in;
+  border-bottom: 1.5px solid #222;
+}
+
+.register-report-heading h1 {
+  margin: 0;
+  color: #111;
+  font-size: 16pt;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.register-report-heading p {
+  margin: 0.035in 0 0;
+  color: #333;
+  font-size: 8.5pt;
+}
+
+.register-report-continued {
+  color: #555;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.register-report-list {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.register-report-record {
+  min-width: 0;
+  padding: 0.075in 0;
+  border-bottom: 1px solid #d3d3d3;
+  break-inside: avoid;
+  font-size: 9pt;
+  line-height: 1.24;
+}
+
+.register-report-record:not(.is-lehr) {
+  font-size: 8.25pt;
+}
+
+.register-report-record.is-lehr {
+  padding-left: 0.08in;
+  border-left: 3px solid #333;
+}
+
+.register-report-record.is-lehr .register-report-type {
+  border-color: #222;
+  color: #111;
+  font-weight: 800;
+}
+
+.register-report-primary {
+  display: grid;
+  grid-template-columns: 1.28in 0.58in minmax(0, 1fr) 0.9in;
+  align-items: start;
+  gap: 0.08in;
+}
+
+.register-report-primary time {
+  color: #333;
+  font-size: 0.9167em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.register-report-type {
+  display: inline-flex;
+  width: fit-content;
+  min-width: 0.46in;
+  justify-content: center;
+  padding: 0.01in 0.045in;
+  border: 1px solid #555;
+  border-radius: 999px;
+  color: #222;
+  font-size: 0.8056em;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.register-report-text {
+  display: grid;
+  min-width: 0;
+  gap: 0.015in;
+}
+
+.register-report-text strong {
+  color: #111;
+  font-size: 1.0556em;
+  line-height: 1.15;
+}
+
+.register-report-description {
+  overflow: hidden;
+  color: #555;
+  font-size: 0.8667em;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.register-report-text-by {
+  overflow-wrap: anywhere;
+  color: #333;
+  font-size: 0.9444em;
+}
+
+.register-report-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.025in 0.13in;
+  margin-top: 0.045in;
+  color: #3d3d3d;
+  font-size: 0.8889em;
+  line-height: 1.25;
+}
+
+.register-report-detail b {
+  color: #222;
+  font-weight: 700;
+}
+
+.register-report-notes {
+  min-width: 2.5in;
+  flex: 1 1 2.5in;
+  white-space: pre-wrap;
+}
+
+.register-report-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.25in;
+  margin-top: auto;
+  padding-top: 0.1in;
+  color: #555;
   font-size: 7.5pt;
 }
 
@@ -1907,6 +2153,36 @@ button.nav-link {
     border: 0;
     border-radius: 0;
   }
+
+  .register-report-toolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .register-report-year-control {
+    order: 3;
+    width: 100%;
+  }
+
+  .register-report-gebet-control {
+    order: 2;
+  }
+
+  .register-report-toolbar > .btn:last-child {
+    margin-left: auto;
+  }
+
+  .register-report-pages {
+    justify-items: start;
+    overflow-x: auto;
+    padding: 0.5rem;
+  }
+
+  .register-report-sheet {
+    width: 8.5in;
+    min-width: 8.5in;
+  }
 }
 
 @media print {
@@ -1954,6 +2230,35 @@ button.nav-link {
   }
 
   .text-report-sheet:last-child {
+    break-after: auto;
+  }
+
+  .register-report-toolbar,
+  .register-report-measure-root {
+    display: none !important;
+  }
+
+  .register-report-preview,
+  .register-report-pages {
+    display: block;
+    min-height: 0;
+    padding: 0;
+    background: #fff;
+  }
+
+  .register-report-sheet {
+    width: 8.5in;
+    height: 11in;
+    min-height: 11in;
+    margin: 0;
+    overflow: hidden;
+    break-after: page;
+    box-shadow: none;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .register-report-sheet:last-child {
     break-after: auto;
   }
 }

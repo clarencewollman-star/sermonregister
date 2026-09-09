@@ -13,6 +13,7 @@ import TextAttachmentManager, {
   type TextAttachment,
 } from "./components/TextAttachmentManager";
 import TextPrintReport from "./components/TextPrintReport";
+import RegisterPrintReport from "./components/RegisterPrintReport";
 
 declare const __APP_VERSION__: string;
 
@@ -277,6 +278,7 @@ const navItems = [
   { label: "Texts", icon: "bi-journal-text" },
   { label: "Vorraden", icon: "bi-files" },
   { label: "Songs", icon: "bi-music-note-list" },
+  { label: "Reports", icon: "bi-printer" },
   { label: "Settings", icon: "bi-gear" },
 ];
 
@@ -1072,6 +1074,10 @@ export default function Home() {
   const [textReportTitle, setTextReportTitle] = useState("Selected Texts");
   const [textReportDate, setTextReportDate] = useState("");
   const textReportReturnScroll = useRef(0);
+  const [registerReportOpen, setRegisterReportOpen] = useState(false);
+  const [registerReportYear, setRegisterReportYear] = useState("");
+  const [registerReportDate, setRegisterReportDate] = useState("");
+  const registerReportReturnScroll = useRef(0);
   const [textEditor, setTextEditor] = useState<TextRecord | "new" | null>(null);
   const [textEditorTags, setTextEditorTags] = useState<TagRecord[]>([]);
   const [textError, setTextError] = useState("");
@@ -1343,6 +1349,7 @@ export default function Home() {
         .sort((left, right) => right.localeCompare(left)),
     [items],
   );
+  const selectedRegisterReportYear = registerReportYear || years[0] || "";
 
   const visibleSongs = useMemo(
     () => {
@@ -1470,6 +1477,34 @@ export default function Home() {
     [texts],
   );
 
+  const registerReportServices = useMemo(
+    () =>
+      items.map((service) => ({
+        id: service.id,
+        dateValue: service.dateValue,
+        type: service.type,
+        song: service.song,
+        songBy: service.songBy,
+        text: service.text,
+        textDescription: textDescriptionsByTitle.get(service.text) || "",
+        textBy: service.textBy,
+        vorrade: service.vorrade,
+        vorradeBy: service.vorradeBy,
+        notes: service.notes,
+      })),
+    [items, textDescriptionsByTitle],
+  );
+
+  const registerReportServiceCount = useMemo(
+    () =>
+      selectedRegisterReportYear === "All Years"
+        ? items.length
+        : items.filter((service) =>
+            service.dateValue.startsWith(`${selectedRegisterReportYear}-`),
+          ).length,
+    [items, selectedRegisterReportYear],
+  );
+
   const peopleChoices = useMemo(
     () => recentlyUsedFirst(people, (person) => person.name),
     [people],
@@ -1538,6 +1573,27 @@ export default function Home() {
     setTextReportOpen(false);
     window.requestAnimationFrame(() =>
       window.scrollTo({ top: textReportReturnScroll.current }),
+    );
+  }
+
+  function openRegisterReport() {
+    if (!selectedRegisterReportYear || !registerReportServiceCount) return;
+    registerReportReturnScroll.current = window.scrollY;
+    setRegisterReportDate(
+      new Date().toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }),
+    );
+    setRegisterReportOpen(true);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
+  }
+
+  function closeRegisterReport() {
+    setRegisterReportOpen(false);
+    window.requestAnimationFrame(() =>
+      window.scrollTo({ top: registerReportReturnScroll.current }),
     );
   }
 
@@ -2515,6 +2571,19 @@ export default function Home() {
     );
   }
 
+  if (registerReportOpen) {
+    return (
+      <RegisterPrintReport
+        services={registerReportServices}
+        years={years}
+        selectedYear={selectedRegisterReportYear}
+        printedDate={registerReportDate}
+        onYearChange={setRegisterReportYear}
+        onBack={closeRegisterReport}
+      />
+    );
+  }
+
   return (
     <div className="app-wrapper">
       <form id="inline-service-form" onSubmit={saveInline} />
@@ -2624,6 +2693,8 @@ export default function Home() {
                 <p className="text-body-secondary mb-0 mt-1">
                   {active === "Register"
                     ? "Weekly Lehr And Gebet History"
+                    : active === "Reports"
+                      ? "Printable Register Reports"
                     : active === "Settings"
                       ? "Backup And Application Information"
                       : `Reusable ${active} Records`}
@@ -3995,6 +4066,94 @@ export default function Home() {
                     No Songs Match Your Search.
                   </div>
                 )}
+              </div>
+            ) : active === "Reports" ? (
+              <div className="card card-primary card-outline shadow-sm reports-card">
+                <div className="card-header border-bottom">
+                  <h4 className="card-title mb-1">Register Report</h4>
+                  <div className="text-body-secondary small">
+                    Print The Complete Register Or One Year
+                  </div>
+                </div>
+                <div className="card-body">
+                  <div className="row g-4 align-items-stretch">
+                    <div className="col-12 col-lg-8">
+                      <div className="border rounded h-100 p-4 bg-body-tertiary register-report-card-content">
+                        <div className="d-flex align-items-start gap-3">
+                          <span className="reports-icon" aria-hidden="true">
+                            <i className="bi bi-journal-richtext" />
+                          </span>
+                          <div>
+                            <h5 className="mb-1">Annual Lehr Register</h5>
+                            <p className="text-body-secondary mb-0">
+                              Every Saved Lehr And Gebet Is Printed In Chronological
+                              Order. Each Year Begins On A New Page.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="row g-3 align-items-end mt-2">
+                          <div className="col-12 col-sm-7">
+                            <label className="form-label fw-semibold" htmlFor="register-report-year">
+                              Report Year
+                            </label>
+                            <select
+                              className="form-select"
+                              id="register-report-year"
+                              value={selectedRegisterReportYear}
+                              onChange={(event) =>
+                                setRegisterReportYear(event.target.value)
+                              }
+                            >
+                              <option>All Years</option>
+                              {years.map((availableYear) => (
+                                <option key={availableYear}>{availableYear}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="col-12 col-sm-5">
+                            <button
+                              className="btn btn-primary w-100"
+                              type="button"
+                              disabled={
+                                !selectedRegisterReportYear || !registerReportServiceCount
+                              }
+                              onClick={openRegisterReport}
+                            >
+                              <i className="bi bi-file-earmark-text me-2" />
+                              Preview Register
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="d-flex flex-wrap align-items-center gap-2 mt-3">
+                          <span className="badge text-bg-primary rounded-pill">
+                            {registerReportServiceCount}{" "}
+                            {registerReportServiceCount === 1 ? "Service" : "Services"}
+                          </span>
+                          <small className="text-body-secondary">
+                            U.S. Letter Portrait · Binder-Friendly Margin
+                          </small>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-12 col-lg-4">
+                      <div className="border rounded h-100 p-4">
+                        <h6 className="fw-semibold">
+                          <i className="bi bi-check2-circle text-primary me-2" />
+                          Included Information
+                        </h6>
+                        <ul className="small text-body-secondary ps-3 mb-0 report-included-list">
+                          <li>Date And Service Type</li>
+                          <li>Text, Description, And Text By</li>
+                          <li>Song And Song By</li>
+                          <li>Vorrade And Vorrade By</li>
+                          <li>Complete Service Notes</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : active === "Settings" ? (
               <div className="card card-primary card-outline shadow-sm settings-backup-card">
