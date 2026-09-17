@@ -1808,7 +1808,12 @@ export default function Home() {
 
   async function deleteSelectedService() {
     if (!selected) return;
-    if (!window.confirm("Delete This Service? This Cannot Be Undone.")) return;
+    const reassignsProgress =
+      selected.progressStartId === selected.id && selected.progressHistory.length > 1;
+    const confirmation = reassignsProgress
+      ? "Delete This Service? Its Lehr Progress Will Be Kept And The Next Service Will Become The Start. This Cannot Be Undone."
+      : "Delete This Service? This Cannot Be Undone.";
+    if (!window.confirm(confirmation)) return;
     setSaveError("");
     setSaveNotice("");
     try {
@@ -1821,14 +1826,17 @@ export default function Home() {
         id?: string;
         error?: string;
         removed_text?: boolean;
+        progress_reassigned?: boolean;
       };
       if (!response.ok) throw new Error(result.error || "Could Not Delete Service");
       await refreshServices();
       await refreshTexts();
       setSaveNotice(
-        result.removed_text
-          ? "Service Deleted — Empty Unused Text Removed"
-          : "Service Deleted",
+        result.progress_reassigned
+          ? "Service Deleted — Lehr Progress Moved To The Next Service"
+          : result.removed_text
+            ? "Service Deleted — Empty Unused Text Removed"
+            : "Service Deleted",
       );
       setSelected(null);
       void refreshSongs().catch(() => setSongError("The Songs Could Not Be Refreshed."));
@@ -3202,10 +3210,21 @@ export default function Home() {
                         <span className="mobile-service-date">
                           {service.mobileDate}
                         </span>
-                        <span
-                          className={`badge ${service.type === "Lehr" ? "text-bg-primary" : "text-bg-warning"}`}
-                        >
-                          {service.type}
+                        <span className="mobile-service-badges">
+                          <span
+                            className={`badge ${service.type === "Lehr" ? "text-bg-primary" : "text-bg-warning"}`}
+                          >
+                            {service.type}
+                          </span>
+                          {service.status && (
+                            <span
+                              className={`badge mobile-service-status ${statusBadgeClass(
+                                service.status,
+                              )}`}
+                            >
+                              {service.status}
+                            </span>
+                          )}
                         </span>
                       </div>
                       <button

@@ -48,7 +48,7 @@ The repository's package visibility settings determine who can download that ima
 
 ## Application version
 
-The current release is `0.19.1`. It is shown in the application header, stored in the image's OCI version label, and published as the matching GHCR tag. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
+The current release is `0.19.2`. It is shown in the application header, stored in the image's OCI version label, and published as the matching GHCR tag. `package.json` is the release-version source used by the frontend and GitHub Actions. Portainer follows the rolling `main` image tag from `compose.yaml`.
 
 When editing an existing service, the Text field now identifies reusable Text records by database ID. A correction can rename the same Text everywhere without losing descriptions, Scripture references, tags, notes, PDFs, service history, or Lehr progress. Selecting another existing Text relinks the service, while an explicit choice creates a separate Text. Existing services do not start or recalculate Lehr progress merely because their Text was edited.
 
@@ -63,6 +63,8 @@ Version 0.18.1 measures the actual rendered height of every selected Text and fi
 Version 0.19.0 adds a dedicated Reports page and an annual Register print preview. It prints all services or one selected year on binder-friendly U.S. Letter portrait pages, places every year on a new page, sorts chronologically, and dynamically fits complete service rows without omitting full Notes.
 
 Version 0.19.1 increases both report side margins to 0.85 inch for comfortable three-ring-punch clearance while preserving identical margins for single- and double-sided printing.
+
+Version 0.19.2 improves the iPhone Register with larger safe-area-aware bottom navigation targets and compact service Status badges. Service deletion can now safely remove a Lehr Progress starting record by preserving its remaining history and promoting the next service to be the new start.
 
 ## Private CSV Import
 

@@ -3460,35 +3460,83 @@ class Handler(BaseHTTPRequestHandler):
                         WHERE member.service_id = ?""",
                     (service_id,),
                 ).fetchone()
-                if membership and membership["start_service_id"] == service_id and membership["member_count"] > 1:
-                    return self.json(
-                        {
-                            "error": (
-                                "This Service Starts A Lehr With Continuations And "
-                                "Cannot Be Deleted."
-                            )
-                        },
-                        409,
-                    )
+                progress_reassigned = False
                 if membership:
                     progress_id = membership["progress_id"]
-                    con.execute(
-                        "DELETE FROM lehr_progress_services WHERE service_id = ?",
-                        (service_id,),
-                    )
-                    if membership["start_service_id"] == service_id:
+                    is_progress_start = membership["start_service_id"] == service_id
+                    if is_progress_start and membership["member_count"] > 1:
+                        replacement = con.execute(
+                            """SELECT member.service_id, service.service_type
+                                 FROM lehr_progress_services member
+                                 JOIN services service ON service.id = member.service_id
+                                WHERE member.progress_id = ? AND member.service_id <> ?
+                                ORDER BY member.sequence_number
+                                LIMIT 1""",
+                            (progress_id, service_id),
+                        ).fetchone()
+                        if not replacement:
+                            raise RuntimeError("The Next Lehr Progress Service Was Not Found.")
+                        stamp = now()
+                        con.execute(
+                            """UPDATE lehr_progress
+                                  SET start_service_id = ?,
+                                      status = CASE
+                                        WHEN completion_service_id = ? THEN 'IN_PROGRESS'
+                                        ELSE status
+                                      END,
+                                      completion_service_id = CASE
+                                        WHEN completion_service_id = ? THEN NULL
+                                        ELSE completion_service_id
+                                      END,
+                                      updated_at = ?
+                                WHERE id = ?""",
+                            (
+                                replacement["service_id"],
+                                service_id,
+                                service_id,
+                                stamp,
+                                progress_id,
+                            ),
+                        )
+                        con.execute(
+                            """UPDATE lehr_progress_services
+                                  SET intent = ?, role_visible = 1
+                                WHERE progress_id = ? AND service_id = ?""",
+                            (
+                                "START"
+                                if replacement["service_type"] == "LEHR"
+                                else "AUTO",
+                                progress_id,
+                                replacement["service_id"],
+                            ),
+                        )
+                        con.execute(
+                            "DELETE FROM lehr_progress_services WHERE service_id = ?",
+                            (service_id,),
+                        )
+                        resequence_progress(con, progress_id)
+                        progress_reassigned = True
+                    elif is_progress_start:
+                        con.execute(
+                            "DELETE FROM lehr_progress_services WHERE service_id = ?",
+                            (service_id,),
+                        )
                         con.execute("DELETE FROM lehr_progress WHERE id = ?", (progress_id,))
                     else:
+                        con.execute(
+                            "DELETE FROM lehr_progress_services WHERE service_id = ?",
+                            (service_id,),
+                        )
                         if membership["completion_service_id"] == service_id:
                             set_progress_status(
                                 con, progress_id, "IN_PROGRESS", None, now()
                             )
                         resequence_progress(con, progress_id)
-                if service and service["service_type"] == "GEBET":
-                    con.execute(
-                        "DELETE FROM lehr_gebet_links WHERE gebet_service_id = ?",
-                        (service_id,),
-                    )
+                con.execute(
+                    """DELETE FROM lehr_gebet_links
+                        WHERE gebet_service_id = ? OR lehr_service_id = ?""",
+                    (service_id, service_id),
+                )
                 deleted = con.execute(
                     "DELETE FROM services WHERE id = ?", (service_id,)
                 )
@@ -3498,7 +3546,13 @@ class Handler(BaseHTTPRequestHandler):
                     con, service["text_id"] if service else None
                 )
                 con.commit()
-                self.json({"id": service_id, "removed_text": removed_text})
+                self.json(
+                    {
+                        "id": service_id,
+                        "removed_text": removed_text,
+                        "progress_reassigned": progress_reassigned,
+                    }
+                )
         except Exception as exc:
             self.json({"error": str(exc)}, 500)
 

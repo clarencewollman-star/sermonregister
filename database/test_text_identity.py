@@ -278,6 +278,40 @@ class TextIdentityApiTest(unittest.TestCase):
             [record["text"] for record in self.request("GET", "/texts")],
         )
 
+        progress_start = self.create_service(
+            "Delete Progress Start", "LEHR", "2026-08-11"
+        )
+        progress_continuation = self.create_service(
+            "Delete Progress Start", "GEBET", "2026-08-12"
+        )
+        progress_deletion = self.request(
+            "DELETE", "/services", {"id": progress_start["id"]}
+        )
+        self.assertTrue(progress_deletion["progress_reassigned"])
+        remaining_progress_service = next(
+            service
+            for service in self.request("GET", "/services")
+            if service["id"] == progress_continuation["id"]
+        )
+        self.assertEqual(
+            remaining_progress_service["progress_start_service_id"],
+            progress_continuation["id"],
+        )
+        self.assertEqual(remaining_progress_service["status_label"], "STARTED_LEHR")
+        progress_connection = sqlite3.connect(self.db_path)
+        try:
+            progress_members_after_delete = progress_connection.execute(
+                """SELECT service_id, sequence_number
+                     FROM lehr_progress_services WHERE progress_id = ?""",
+                (progress_start["progress_id"],),
+            ).fetchall()
+        finally:
+            progress_connection.close()
+        self.assertEqual(
+            progress_members_after_delete,
+            [(progress_continuation["id"], 1)],
+        )
+
         source = self.request(
             "POST",
             "/texts",

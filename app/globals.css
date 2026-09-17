@@ -995,7 +995,7 @@ button.nav-link {
 
   .app-content {
     padding-inline: 0.75rem;
-    padding-bottom: 3rem;
+    padding-bottom: calc(4rem + env(safe-area-inset-bottom));
   }
 
   .desktop-register-table {
@@ -1060,9 +1060,19 @@ button.nav-link {
     white-space: nowrap;
   }
 
-  .mobile-service-heading .badge {
+  .mobile-service-badges {
+    display: inline-flex;
     flex: 0 0 auto;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .mobile-service-badges .badge {
     font-size: 0.68rem;
+  }
+
+  .mobile-service-badges .mobile-service-status {
+    font-size: 0.6rem;
   }
 
   .mobile-text-record-link {
@@ -1390,10 +1400,13 @@ button.nav-link {
     left: 0;
     z-index: 1030;
     display: flex;
-    min-height: 36px;
+    min-height: 44px;
     flex-flow: row nowrap !important;
     align-items: stretch;
-    padding: 0.1rem 0.2rem max(0.1rem, env(safe-area-inset-bottom));
+    padding: 0.25rem 0.2rem max(
+      0.75rem,
+      calc(env(safe-area-inset-bottom) + 0.35rem)
+    );
     background: var(--bs-body-bg);
   }
 
@@ -1401,24 +1414,24 @@ button.nav-link {
     display: flex !important;
     width: auto;
     min-width: 0;
-    min-height: 32px;
+    min-height: 44px;
     flex: 1 1 25%;
     flex-direction: row;
     align-items: center;
     justify-content: center;
     gap: 0.2rem;
-    padding: 0.1rem;
-    font-size: 0.6rem;
+    padding: 0.2rem;
+    font-size: 0.68rem;
     line-height: 1;
     white-space: nowrap;
   }
 
   .mobile-tabbar .bi {
-    font-size: 0.85rem;
+    font-size: 1rem;
   }
 
   .app-footer {
-    margin-bottom: 2.5rem;
+    margin-bottom: calc(3.75rem + env(safe-area-inset-bottom));
   }
 
   .service-form-modal,
