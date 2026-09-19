@@ -606,6 +606,55 @@ function firstLine(value: string) {
   return value.split(/\r?\n/, 1)[0].trim();
 }
 
+function parseTextSearch(value: string) {
+  const words: string[] = [];
+  let beforeDate = "";
+  let beforeCommandCount = 0;
+  let error = "";
+
+  for (const word of value.trim().split(/\s+/).filter(Boolean)) {
+    if (!word.toLowerCase().startsWith("before:")) {
+      words.push(word);
+      continue;
+    }
+
+    beforeCommandCount += 1;
+    const requestedDate = word.slice("before:".length);
+    if (!requestedDate) {
+      error = "Enter A Year Or Date After Before:, Such As Before:2024.";
+      continue;
+    }
+
+    if (/^\d{4}$/.test(requestedDate)) {
+      beforeDate = `${requestedDate}-01-01`;
+      continue;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      const parsedDate = new Date(`${requestedDate}T00:00:00Z`);
+      if (
+        !Number.isNaN(parsedDate.getTime()) &&
+        parsedDate.toISOString().slice(0, 10) === requestedDate
+      ) {
+        beforeDate = requestedDate;
+        continue;
+      }
+    }
+
+    error = "Use Before:YYYY Or Before:YYYY-MM-DD.";
+  }
+
+  if (beforeCommandCount > 1) {
+    error = "Use Only One Before: Date In A Search.";
+  }
+
+  return {
+    words: words.join(" ").toLowerCase(),
+    beforeDate,
+    error,
+  };
+}
+
 function textUsageSummary(record: TextRecord) {
   const parts =
     record.timesUsed > 0
@@ -1611,20 +1660,26 @@ export default function Home() {
     [songs, songQuery, songSort, songSortDirection],
   );
 
+  const textSearch = useMemo(() => parseTextSearch(textQuery), [textQuery]);
+
   const visibleTexts = useMemo(
     () => {
+      if (textSearch.error) return [];
       const filteredTexts = texts.filter(
         (record) =>
           selectedTagIds.every((tagId) => record.tagIds.includes(tagId)) &&
+          (!textSearch.beforeDate ||
+            (Boolean(record.lastUsedValue) &&
+              record.lastUsedValue < textSearch.beforeDate)) &&
           `${record.text} ${record.description} ${record.tags} ${record.scriptureReference} ${record.songsForText} ${record.notes}`
             .toLowerCase()
-            .includes(textQuery.toLowerCase()),
+            .includes(textSearch.words),
       );
       return filteredTexts.sort((left, right) =>
         compareTextRecords(left, right, textSort, textSortDirection),
       );
     },
-    [texts, textQuery, textSort, textSortDirection, selectedTagIds],
+    [texts, textSearch, textSort, textSortDirection, selectedTagIds],
   );
 
   const visibleVorraden = useMemo(() => {
@@ -4053,10 +4108,15 @@ export default function Home() {
                           className="form-control"
                           value={textQuery}
                           onChange={(event) => setTextQuery(event.target.value)}
-                          placeholder="Search Texts, Descriptions, Tags, Scripture References, Or Notes"
+                          placeholder="Search Texts Or Use Before:2024"
                           aria-label="Search Texts"
                         />
                       </div>
+                      {textSearch.error && (
+                        <div className="small text-danger mt-1" role="alert">
+                          {textSearch.error}
+                        </div>
+                      )}
                     </div>
                     <div className="col-auto">
                       <TagFilter
@@ -4118,10 +4178,15 @@ export default function Home() {
                         className="form-control"
                         value={textQuery}
                         onChange={(event) => setTextQuery(event.target.value)}
-                        placeholder="Search Texts"
+                        placeholder="Search Texts Or Before:2024"
                         aria-label="Search Texts"
                       />
                     </div>
+                    {textSearch.error && (
+                      <div className="small text-danger" role="alert">
+                        {textSearch.error}
+                      </div>
+                    )}
                     <div className="mobile-text-toolbar-actions">
                       <select
                         className="form-select"
