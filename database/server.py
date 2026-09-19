@@ -149,6 +149,50 @@ CREATE TABLE text_attachments_v2 (
 )
 """
 
+VORRADE_ATTACHMENTS_V2_SQL = """
+CREATE TABLE vorrade_attachments_v2 (
+  id TEXT PRIMARY KEY,
+  vorrade_id TEXT NOT NULL REFERENCES vorraden(id) ON DELETE CASCADE,
+  original_file_name TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  storage_key TEXT NOT NULL UNIQUE,
+  mime_type TEXT NOT NULL CHECK (mime_type IN (
+    'application/pdf', 'image/jpeg', 'image/png', 'image/webp',
+    'image/heic', 'image/heif'
+  )),
+  byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  display_storage_key TEXT UNIQUE,
+  display_mime_type TEXT CHECK (display_mime_type IN (
+    'image/jpeg', 'image/png', 'image/webp'
+  )),
+  display_byte_size INTEGER CHECK (display_byte_size >= 0),
+  display_sha256 TEXT CHECK (
+    display_sha256 IS NULL OR length(display_sha256) = 64
+  ),
+  sort_order INTEGER NOT NULL CHECK (sort_order >= 1),
+  crop_json TEXT,
+  rotation_degrees INTEGER NOT NULL DEFAULT 0 CHECK (
+    rotation_degrees IN (0, 90, 180, 270)
+  ),
+  last_page INTEGER NOT NULL DEFAULT 1 CHECK (last_page >= 1),
+  last_offset REAL NOT NULL DEFAULT 0 CHECK (
+    last_offset >= 0 AND last_offset <= 1
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (mime_type = 'application/pdf' AND display_storage_key IS NULL AND
+      display_mime_type IS NULL AND display_byte_size IS NULL AND
+      display_sha256 IS NULL)
+    OR
+    (mime_type <> 'application/pdf' AND display_storage_key IS NOT NULL AND
+      display_mime_type IS NOT NULL AND display_byte_size IS NOT NULL AND
+      display_sha256 IS NOT NULL)
+  )
+)
+"""
+
 
 def now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -209,6 +253,27 @@ def ensure_schema(connection, database_path=DB_PATH):
         bootstrap_schema = bootstrap_schema.replace(
             """CREATE UNIQUE INDEX IF NOT EXISTS text_attachments_order_idx
   ON text_attachments(text_id, sort_order);""",
+            "",
+        )
+    existing_vorrade_attachment_table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'vorrade_attachments'"""
+    ).fetchone()
+    existing_vorrade_attachment_columns = (
+        {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(vorrade_attachments)")
+        }
+        if existing_vorrade_attachment_table
+        else set()
+    )
+    if (
+        existing_vorrade_attachment_table
+        and "sort_order" not in existing_vorrade_attachment_columns
+    ):
+        bootstrap_schema = bootstrap_schema.replace(
+            """CREATE UNIQUE INDEX IF NOT EXISTS vorrade_attachments_order_idx
+  ON vorrade_attachments(vorrade_id, sort_order);""",
             "",
         )
     connection.executescript(bootstrap_schema)
@@ -373,6 +438,46 @@ def ensure_schema(connection, database_path=DB_PATH):
                 "ALTER TABLE text_attachments_v2 RENAME TO text_attachments"
             )
             connection.execute("PRAGMA user_version = 10")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
+
+    vorrade_attachment_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(vorrade_attachments)")
+    }
+    if vorrade_attachment_columns and "display_name" not in vorrade_attachment_columns:
+        if not backup_path:
+            backup_path = schema_backup(database_path, connection)
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(VORRADE_ATTACHMENTS_V2_SQL)
+            connection.execute(
+                """INSERT INTO vorrade_attachments_v2
+                   (id, vorrade_id, original_file_name, display_name, storage_key,
+                    mime_type, byte_size, sha256, display_storage_key,
+                    display_mime_type, display_byte_size, display_sha256,
+                    sort_order, crop_json, rotation_degrees, last_page,
+                    last_offset, created_at, updated_at)
+                   SELECT id, vorrade_id, original_file_name, original_file_name,
+                          storage_key, mime_type, byte_size, sha256,
+                          NULL, NULL, NULL, NULL,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY vorrade_id ORDER BY created_at, id
+                          ),
+                          NULL, 0, 1, 0, created_at, created_at
+                     FROM vorrade_attachments"""
+            )
+            connection.execute("DROP TABLE vorrade_attachments")
+            connection.execute(
+                "ALTER TABLE vorrade_attachments_v2 RENAME TO vorrade_attachments"
+            )
+            connection.execute("PRAGMA user_version = 11")
             connection.commit()
         except Exception:
             connection.rollback()
@@ -646,6 +751,49 @@ def text_rows(con):
     return rows
 
 
+def vorrade_usage_history_by_vorrade(con):
+    histories = {}
+    sql = """
+    SELECT services.vorrade_id, services.id, services.service_date,
+           texts.text AS text_title
+      FROM services
+      JOIN texts ON texts.id = services.text_id
+     WHERE services.vorrade_id IS NOT NULL
+  ORDER BY services.service_date DESC, services.created_at DESC, services.id DESC
+    """
+    for row in con.execute(sql):
+        histories.setdefault(row["vorrade_id"], []).append(
+            {
+                "id": row["id"],
+                "date": row["service_date"],
+                "text": row["text_title"],
+            }
+        )
+    return histories
+
+
+def vorrade_rows(con):
+    sql = """
+    SELECT vorraden.id, vorraden.title, vorraden.notes,
+           (SELECT COUNT(*)
+              FROM services
+             WHERE services.vorrade_id = vorraden.id) AS service_count,
+           (SELECT COUNT(*)
+              FROM vorrade_attachments attachments
+             WHERE attachments.vorrade_id = vorraden.id) AS attachment_count
+      FROM vorraden
+  ORDER BY vorraden.title COLLATE NOCASE
+    """
+    history_by_vorrade = vorrade_usage_history_by_vorrade(con)
+    rows = [dict(row) for row in con.execute(sql)]
+    for row in rows:
+        usage_history = history_by_vorrade.get(row["id"], [])
+        row["usage_history"] = usage_history
+        row["times_used"] = len(usage_history)
+        row["last_used"] = usage_history[0]["date"] if usage_history else None
+    return rows
+
+
 TEXT_DETAIL_FIELDS = (
     ("description", "description"),
     ("scriptureReference", "scripture_reference"),
@@ -887,6 +1035,151 @@ def resolve_service_text_update(con, existing, body):
     }
 
 
+def merge_vorrade_records(con, source_id, target_id, source_notes, notes_choice):
+    source = con.execute(
+        "SELECT * FROM vorraden WHERE id = ?", (source_id,)
+    ).fetchone()
+    target = con.execute(
+        "SELECT * FROM vorraden WHERE id = ?", (target_id,)
+    ).fetchone()
+    if not source or not target:
+        raise ValueError("Both Vorrade Records Are Required For A Merge")
+    if source_id == target_id:
+        raise ValueError("A Vorrade Cannot Be Merged Into Itself")
+
+    source_value = str(source_notes if source_notes is not None else source["notes"] or "").strip()
+    target_value = str(target["notes"] or "").strip()
+    if source_value and target_value and source_value != target_value:
+        choice = str(notes_choice or "").strip().upper()
+        if choice not in ("SOURCE", "TARGET"):
+            raise ValueError("Choose Which Notes To Keep Before Merging")
+        resolved_notes = source_value if choice == "SOURCE" else target_value
+    else:
+        resolved_notes = source_value or target_value or None
+
+    stamp = now()
+    con.execute(
+        "UPDATE services SET vorrade_id = ?, updated_at = ? WHERE vorrade_id = ?",
+        (target_id, stamp, source_id),
+    )
+    target_attachment_count = int(
+        con.execute(
+            """SELECT COALESCE(MAX(sort_order), 0)
+                 FROM vorrade_attachments WHERE vorrade_id = ?""",
+            (target_id,),
+        ).fetchone()[0]
+    )
+    con.execute(
+        """UPDATE vorrade_attachments
+              SET vorrade_id = ?, sort_order = sort_order + ?, updated_at = ?
+            WHERE vorrade_id = ?""",
+        (target_id, target_attachment_count, stamp, source_id),
+    )
+    con.execute(
+        "UPDATE vorraden SET notes = ?, updated_at = ? WHERE id = ?",
+        (resolved_notes, stamp, target_id),
+    )
+    con.execute("DELETE FROM vorraden WHERE id = ?", (source_id,))
+    return target_id
+
+
+def resolve_service_vorrade_update(con, existing, body):
+    old_vorrade_id = existing["vorrade_id"]
+    current_vorrade_id = str(body.get("currentVorradeId", "")).strip() or None
+    if "currentVorradeId" in body and current_vorrade_id != old_vorrade_id:
+        raise ApiError(
+            "This Service Changed Since It Was Opened. Close It And Try Again.",
+            409,
+            "STALE_VORRADE",
+        )
+    requested_title = str(body.get("vorrade", "")).strip()
+    action = str(body.get("vorradeAction", "AUTO")).strip().upper()
+    result = "UNCHANGED"
+    affected_service_count = 1
+
+    if not requested_title or action == "CLEAR":
+        return {
+            "old_vorrade_id": old_vorrade_id,
+            "vorrade_id": None,
+            "vorrade_result": "CLEARED" if old_vorrade_id else "UNCHANGED",
+            "affected_service_count": 1,
+        }
+    if action in ("", "AUTO"):
+        vorrade_id = master_id(con, "vorraden", "title", requested_title)
+        result = "RELINKED" if vorrade_id != old_vorrade_id else "UNCHANGED"
+    elif action == "KEEP":
+        if not old_vorrade_id:
+            raise ApiError("Current Vorrade Not Found", 404)
+        current = con.execute(
+            "SELECT title FROM vorraden WHERE id = ?", (old_vorrade_id,)
+        ).fetchone()
+        if not current or requested_title != current["title"]:
+            raise ApiError("The Vorrade Name Changed Without A Vorrade Action")
+        vorrade_id = old_vorrade_id
+    elif action == "RENAME":
+        if not old_vorrade_id:
+            raise ApiError("Current Vorrade Not Found", 404)
+        current = con.execute(
+            "SELECT title FROM vorraden WHERE id = ?", (old_vorrade_id,)
+        ).fetchone()
+        if not current:
+            raise ApiError("Current Vorrade Not Found", 404)
+        duplicate = con.execute(
+            """SELECT id FROM vorraden
+                WHERE title = ? COLLATE NOCASE AND id <> ?""",
+            (requested_title, old_vorrade_id),
+        ).fetchone()
+        if duplicate:
+            raise ApiError(
+                "This Vorrade Already Exists",
+                409,
+                "VORRADE_EXISTS",
+                targetId=duplicate["id"],
+            )
+        affected_service_count = con.execute(
+            "SELECT COUNT(*) FROM services WHERE vorrade_id = ?",
+            (old_vorrade_id,),
+        ).fetchone()[0]
+        con.execute(
+            "UPDATE vorraden SET title = ?, updated_at = ? WHERE id = ?",
+            (requested_title, now(), old_vorrade_id),
+        )
+        vorrade_id = old_vorrade_id
+        result = "RENAMED" if requested_title != current["title"] else "UNCHANGED"
+    elif action == "RELINK":
+        target_id = str(body.get("targetVorradeId", "")).strip()
+        target = con.execute(
+            "SELECT id FROM vorraden WHERE id = ?", (target_id,)
+        ).fetchone()
+        if not target:
+            raise ApiError("Selected Vorrade Not Found", 404)
+        vorrade_id = target["id"]
+        result = "RELINKED" if vorrade_id != old_vorrade_id else "UNCHANGED"
+    elif action == "CREATE":
+        duplicate = con.execute(
+            "SELECT id FROM vorraden WHERE title = ? COLLATE NOCASE",
+            (requested_title,),
+        ).fetchone()
+        if duplicate:
+            raise ApiError(
+                "This Vorrade Already Exists",
+                409,
+                "VORRADE_EXISTS",
+                targetId=duplicate["id"],
+            )
+        vorrade_id = master_id(con, "vorraden", "title", requested_title)
+        result = "CREATED"
+    else:
+        raise ApiError("Invalid Vorrade Action")
+
+    return {
+        "old_vorrade_id": old_vorrade_id,
+        "vorrade_id": vorrade_id,
+        "vorrade_result": result,
+        "affected_service_count": affected_service_count,
+    }
+
+
 def people_rows(con):
     return [
         dict(row)
@@ -926,6 +1219,22 @@ def text_attachment_rows(con, text_id):
                 WHERE text_id = ?
                 ORDER BY sort_order, created_at, id""",
             (text_id,),
+        )
+    ]
+
+
+def vorrade_attachment_rows(con, vorrade_id):
+    return [
+        dict(row)
+        for row in con.execute(
+            """SELECT id, vorrade_id, original_file_name, display_name, mime_type,
+                      byte_size, display_byte_size, sort_order, crop_json,
+                      rotation_degrees, last_page, last_offset,
+                      created_at, updated_at
+                 FROM vorrade_attachments
+                WHERE vorrade_id = ?
+                ORDER BY sort_order, created_at, id""",
+            (vorrade_id,),
         )
     ]
 
@@ -2224,6 +2533,7 @@ def service_rows(con):
            texts.id AS text_id,
            texts.text AS text_title,
            COALESCE(text_person.name, '') AS text_by,
+           vorraden.id AS vorrade_id,
            vorraden.title AS vorrade,
            vorrade_person.name AS vorrade_by,
            progress.id AS progress_id,
@@ -2644,15 +2954,168 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.json({"error": str(exc)}, 500)
 
-    def create_text_attachment(self):
-        written_paths = []
+    def create_vorrade(self):
         try:
             body = self.body()
-            text_id = str(body.get("textId", "")).strip()
+            title = str(body.get("title", "")).strip()
+            if not title:
+                return self.json({"error": "Vorrade is required"}, 400)
+            with connect() as con:
+                existing = con.execute(
+                    "SELECT id FROM vorraden WHERE title = ? COLLATE NOCASE",
+                    (title,),
+                ).fetchone()
+                if existing:
+                    return self.json({"error": "This Vorrade Already Exists"}, 409)
+                vorrade_id = str(uuid.uuid4())
+                stamp = now()
+                con.execute(
+                    """INSERT INTO vorraden
+                       (id, title, notes, active, created_at, updated_at)
+                       VALUES (?, ?, ?, 1, ?, ?)""",
+                    (
+                        vorrade_id,
+                        title,
+                        str(body.get("notes", "")).strip() or None,
+                        stamp,
+                        stamp,
+                    ),
+                )
+                con.commit()
+                record = next(
+                    row for row in vorrade_rows(con) if row["id"] == vorrade_id
+                )
+                self.json(record, 201)
+        except Exception as exc:
+            self.json({"error": str(exc)}, 500)
+
+    def update_vorrade(self):
+        try:
+            body = self.body()
+            vorrade_id = str(body.get("id", "")).strip()
+            title = str(body.get("title", "")).strip()
+            if not vorrade_id or not title:
+                return self.json({"error": "Vorrade record and title are required"}, 400)
+            with connect() as con:
+                existing = con.execute(
+                    "SELECT * FROM vorraden WHERE id = ?", (vorrade_id,)
+                ).fetchone()
+                if not existing:
+                    return self.json({"error": "Vorrade Not Found"}, 404)
+                duplicate = con.execute(
+                    """SELECT * FROM vorraden
+                        WHERE title = ? COLLATE NOCASE AND id <> ?""",
+                    (title, vorrade_id),
+                ).fetchone()
+                if duplicate:
+                    source_notes = str(body.get("notes", "")).strip()
+                    target_notes = str(duplicate["notes"] or "").strip()
+                    conflict = bool(
+                        source_notes
+                        and target_notes
+                        and source_notes != target_notes
+                    )
+                    merge_target_id = str(body.get("mergeTargetId", "")).strip()
+                    if merge_target_id != duplicate["id"]:
+                        return self.json(
+                            {
+                                "error": "This Vorrade Already Exists",
+                                "code": "VORRADE_EXISTS",
+                                "targetId": duplicate["id"],
+                                "conflicts": ["notes"] if conflict else [],
+                            },
+                            409,
+                        )
+                    notes_choice = str(body.get("notesChoice", "")).strip().upper()
+                    if conflict and notes_choice not in ("SOURCE", "TARGET"):
+                        return self.json(
+                            {
+                                "error": "Choose Which Notes To Keep Before Merging",
+                                "code": "MERGE_CHOICE_REQUIRED",
+                                "targetId": duplicate["id"],
+                                "conflicts": ["notes"],
+                            },
+                            409,
+                        )
+                    target_id = merge_vorrade_records(
+                        con,
+                        vorrade_id,
+                        duplicate["id"],
+                        source_notes,
+                        notes_choice,
+                    )
+                    con.commit()
+                    record = next(
+                        row for row in vorrade_rows(con) if row["id"] == target_id
+                    )
+                    record["vorrade_action"] = "MERGED"
+                    record["merged_from_id"] = vorrade_id
+                    return self.json(record)
+                affected_services = con.execute(
+                    "SELECT COUNT(*) FROM services WHERE vorrade_id = ?",
+                    (vorrade_id,),
+                ).fetchone()[0]
+                con.execute(
+                    """UPDATE vorraden
+                          SET title = ?, notes = ?, active = 1, updated_at = ?
+                        WHERE id = ?""",
+                    (
+                        title,
+                        str(body.get("notes", "")).strip() or None,
+                        now(),
+                        vorrade_id,
+                    ),
+                )
+                con.commit()
+                record = next(
+                    row for row in vorrade_rows(con) if row["id"] == vorrade_id
+                )
+                record["vorrade_action"] = (
+                    "RENAMED" if title != existing["title"] else "UPDATED"
+                )
+                record["affected_service_count"] = affected_services
+                self.json(record)
+        except ValueError as exc:
+            self.json({"error": str(exc)}, 400)
+        except Exception as exc:
+            self.json({"error": str(exc)}, 500)
+
+    def attachment_config(self, owner_kind):
+        configurations = {
+            "text": {
+                "table": "text_attachments",
+                "owner_table": "texts",
+                "owner_column": "text_id",
+                "payload_key": "textId",
+                "directory": "texts",
+                "label": "Text",
+                "rows": text_attachment_rows,
+            },
+            "vorrade": {
+                "table": "vorrade_attachments",
+                "owner_table": "vorraden",
+                "owner_column": "vorrade_id",
+                "payload_key": "vorradeId",
+                "directory": "vorraden",
+                "label": "Vorrade",
+                "rows": vorrade_attachment_rows,
+            },
+        }
+        return configurations[owner_kind]
+
+    def create_owned_attachment(self, owner_kind):
+        written_paths = []
+        try:
+            config = self.attachment_config(owner_kind)
+            body = self.body()
+            owner_id = str(body.get(config["payload_key"], "")).strip()
             file_name = str(body.get("fileName", "")).strip()
             encoded_data = str(body.get("data", "")).strip()
-            if not text_id or not file_name or not encoded_data:
-                return self.json({"error": "Text and attachment file are required"}, 400)
+            if not owner_id or not file_name or not encoded_data:
+                return self.json(
+                    {"error": f"{config['label']} and attachment file are required"},
+                    400,
+                )
             file_data = decoded_attachment_data(
                 encoded_data, "selected attachment", MAX_ATTACHMENT_BYTES
             )
@@ -2681,28 +3144,33 @@ class Handler(BaseHTTPRequestHandler):
 
             with connect() as con:
                 owner = con.execute(
-                    "SELECT id FROM texts WHERE id = ?", (text_id,)
+                    f"SELECT id FROM {config['owner_table']} WHERE id = ?", (owner_id,)
                 ).fetchone()
                 if not owner:
-                    return self.json({"error": "Text not found"}, 404)
+                    return self.json({"error": f"{config['label']} not found"}, 404)
                 attachment_id = str(uuid.uuid4())
                 extension = ATTACHMENT_MIME_EXTENSIONS[detected_mime]
-                storage_key = f"texts/{text_id}/{attachment_id}-original{extension}"
+                storage_key = (
+                    f"{config['directory']}/{owner_id}/"
+                    f"{attachment_id}-original{extension}"
+                )
                 written_paths.append(write_attachment_file(storage_key, file_data))
                 display_storage_key = None
                 if display_data is not None:
                     display_extension = ATTACHMENT_MIME_EXTENSIONS[display_mime]
                     display_storage_key = (
-                        f"texts/{text_id}/{attachment_id}-display{display_extension}"
+                        f"{config['directory']}/{owner_id}/"
+                        f"{attachment_id}-display{display_extension}"
                     )
                     written_paths.append(
                         write_attachment_file(display_storage_key, display_data)
                     )
                 sort_order = int(
                     con.execute(
-                        """SELECT COALESCE(MAX(sort_order), 0) + 1
-                             FROM text_attachments WHERE text_id = ?""",
-                        (text_id,),
+                        f"""SELECT COALESCE(MAX(sort_order), 0) + 1
+                               FROM {config['table']}
+                              WHERE {config['owner_column']} = ?""",
+                        (owner_id,),
                     ).fetchone()[0]
                 )
                 stamp = now()
@@ -2710,8 +3178,9 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("displayName"), Path(file_name).name
                 )
                 con.execute(
-                    """INSERT INTO text_attachments
-                       (id, text_id, original_file_name, display_name, storage_key,
+                    f"""INSERT INTO {config['table']}
+                       (id, {config['owner_column']}, original_file_name,
+                        display_name, storage_key,
                         mime_type, byte_size, sha256, display_storage_key,
                         display_mime_type, display_byte_size, display_sha256,
                         sort_order, crop_json, rotation_degrees, last_page,
@@ -2720,7 +3189,7 @@ class Handler(BaseHTTPRequestHandler):
                                1, 0, ?, ?)""",
                     (
                         attachment_id,
-                        text_id,
+                        owner_id,
                         attachment_file_name(file_name, "Attachment"),
                         display_name,
                         storage_key,
@@ -2743,7 +3212,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 record = next(
                     row
-                    for row in text_attachment_rows(con, text_id)
+                    for row in config["rows"](con, owner_id)
                     if row["id"] == attachment_id
                 )
                 con.commit()
@@ -2757,9 +3226,11 @@ class Handler(BaseHTTPRequestHandler):
                 file_path.unlink(missing_ok=True)
             self.json({"error": str(exc)}, 500)
 
-    def update_text_attachment(self):
+    def update_owned_attachment(self, owner_kind):
         new_display_path = None
+        old_display_key = None
         try:
+            config = self.attachment_config(owner_kind)
             body = self.body()
             attachment_id = str(body.get("id", "")).strip()
             action = str(body.get("action", "")).strip().upper()
@@ -2771,8 +3242,9 @@ class Handler(BaseHTTPRequestHandler):
                         body.get("displayName"), "Attachment"
                     )
                     result = con.execute(
-                        """UPDATE text_attachments SET display_name = ?, updated_at = ?
-                             WHERE id = ?""",
+                        f"""UPDATE {config['table']}
+                                SET display_name = ?, updated_at = ?
+                              WHERE id = ?""",
                         (display_name, now(), attachment_id),
                     )
                     if not result.rowcount:
@@ -2783,7 +3255,7 @@ class Handler(BaseHTTPRequestHandler):
                     if last_offset < 0 or last_offset > 1:
                         return self.json({"error": "Invalid reading position"}, 400)
                     result = con.execute(
-                        """UPDATE text_attachments
+                        f"""UPDATE {config['table']}
                               SET last_page = ?, last_offset = ?, updated_at = ?
                             WHERE id = ?""",
                         (last_page, last_offset, now(), attachment_id),
@@ -2791,32 +3263,34 @@ class Handler(BaseHTTPRequestHandler):
                     if not result.rowcount:
                         return self.json({"error": "Attachment not found"}, 404)
                 elif action == "REORDER":
-                    text_id = str(body.get("textId", "")).strip()
+                    owner_id = str(body.get(config["payload_key"], "")).strip()
                     ids = body.get("ids")
-                    if not text_id or not isinstance(ids, list) or not ids:
+                    if not owner_id or not isinstance(ids, list) or not ids:
                         return self.json({"error": "Attachment order is required"}, 400)
                     current_ids = [
                         row["id"]
                         for row in con.execute(
-                            """SELECT id FROM text_attachments
-                                 WHERE text_id = ? ORDER BY sort_order""",
-                            (text_id,),
+                            f"""SELECT id FROM {config['table']}
+                                  WHERE {config['owner_column']} = ?
+                               ORDER BY sort_order""",
+                            (owner_id,),
                         )
                     ]
                     if len(ids) != len(set(ids)) or set(ids) != set(current_ids):
                         return self.json({"error": "Attachment order is invalid"}, 400)
                     con.execute(
-                        """UPDATE text_attachments SET sort_order = sort_order + 1000000
-                             WHERE text_id = ?""",
-                        (text_id,),
+                        f"""UPDATE {config['table']}
+                                SET sort_order = sort_order + 1000000
+                              WHERE {config['owner_column']} = ?""",
+                        (owner_id,),
                     )
                     stamp = now()
                     for index, ordered_id in enumerate(ids, 1):
                         con.execute(
-                            """UPDATE text_attachments
+                            f"""UPDATE {config['table']}
                                   SET sort_order = ?, updated_at = ?
-                                WHERE id = ? AND text_id = ?""",
-                            (index, stamp, ordered_id, text_id),
+                                WHERE id = ? AND {config['owner_column']} = ?""",
+                            (index, stamp, ordered_id, owner_id),
                         )
                 elif action == "PHOTO_EDIT":
                     display_data = decoded_attachment_data(
@@ -2826,8 +3300,9 @@ class Handler(BaseHTTPRequestHandler):
                     if display_mime not in DISPLAY_IMAGE_MIMES:
                         return self.json({"error": "Invalid optimized photo"}, 400)
                     attachment = con.execute(
-                        """SELECT text_id, mime_type, display_storage_key
-                             FROM text_attachments WHERE id = ?""",
+                        f"""SELECT {config['owner_column']} AS owner_id,
+                                   mime_type, display_storage_key
+                              FROM {config['table']} WHERE id = ?""",
                         (attachment_id,),
                     ).fetchone()
                     if not attachment:
@@ -2836,13 +3311,14 @@ class Handler(BaseHTTPRequestHandler):
                         return self.json({"error": "PDF files cannot be cropped"}, 400)
                     extension = ATTACHMENT_MIME_EXTENSIONS[display_mime]
                     display_key = (
-                        f"texts/{attachment['text_id']}/{attachment_id}-display-"
+                        f"{config['directory']}/{attachment['owner_id']}/"
+                        f"{attachment_id}-display-"
                         f"{uuid.uuid4().hex}{extension}"
                     )
                     new_display_path = write_attachment_file(display_key, display_data)
                     old_display_key = attachment["display_storage_key"]
                     con.execute(
-                        """UPDATE text_attachments
+                        f"""UPDATE {config['table']}
                               SET display_storage_key = ?, display_mime_type = ?,
                                   display_byte_size = ?, display_sha256 = ?,
                                   display_name = ?, crop_json = ?,
@@ -2868,14 +3344,15 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "PHOTO_EDIT":
                     new_display_path = None
                 if action == "REORDER":
-                    return self.json(text_attachment_rows(con, text_id))
+                    return self.json(config["rows"](con, owner_id))
                 record = con.execute(
-                    "SELECT text_id FROM text_attachments WHERE id = ?",
+                    f"""SELECT {config['owner_column']} AS owner_id
+                           FROM {config['table']} WHERE id = ?""",
                     (attachment_id,),
                 ).fetchone()
                 response = next(
                     row
-                    for row in text_attachment_rows(con, record["text_id"])
+                    for row in config["rows"](con, record["owner_id"])
                     if row["id"] == attachment_id
                 )
             if action == "PHOTO_EDIT" and old_display_key:
@@ -2893,12 +3370,15 @@ class Handler(BaseHTTPRequestHandler):
                 new_display_path.unlink(missing_ok=True)
             return self.json({"error": str(exc)}, 500)
 
-    def send_text_attachment(self, attachment_id, download=False, original=False):
+    def send_owned_attachment(
+        self, owner_kind, attachment_id, download=False, original=False
+    ):
+        config = self.attachment_config(owner_kind)
         with connect() as con:
             attachment = con.execute(
-                """SELECT original_file_name, display_name, storage_key, mime_type,
+                f"""SELECT original_file_name, display_name, storage_key, mime_type,
                           display_storage_key, display_mime_type
-                     FROM text_attachments WHERE id = ?""",
+                     FROM {config['table']} WHERE id = ?""",
                 (attachment_id,),
             ).fetchone()
         if not attachment:
@@ -2934,6 +3414,60 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(file_data)
+
+    def create_text_attachment(self):
+        return self.create_owned_attachment("text")
+
+    def create_vorrade_attachment(self):
+        return self.create_owned_attachment("vorrade")
+
+    def update_text_attachment(self):
+        return self.update_owned_attachment("text")
+
+    def update_vorrade_attachment(self):
+        return self.update_owned_attachment("vorrade")
+
+    def send_text_attachment(self, attachment_id, download=False, original=False):
+        return self.send_owned_attachment(
+            "text", attachment_id, download=download, original=original
+        )
+
+    def send_vorrade_attachment(self, attachment_id, download=False, original=False):
+        return self.send_owned_attachment(
+            "vorrade", attachment_id, download=download, original=original
+        )
+
+    def delete_owned_attachment(self, owner_kind):
+        try:
+            config = self.attachment_config(owner_kind)
+            body = self.body()
+            attachment_id = str(body.get("id", "")).strip()
+            if not attachment_id:
+                return self.json({"error": "Attachment id is required"}, 400)
+            with connect() as con:
+                attachment = con.execute(
+                    f"""SELECT storage_key, display_storage_key
+                          FROM {config['table']} WHERE id = ?""",
+                    (attachment_id,),
+                ).fetchone()
+                if not attachment:
+                    return self.json({"error": "Attachment not found"}, 404)
+                con.execute(
+                    f"DELETE FROM {config['table']} WHERE id = ?",
+                    (attachment_id,),
+                )
+                con.commit()
+            for storage_key in (
+                attachment["storage_key"], attachment["display_storage_key"]
+            ):
+                if storage_key:
+                    try:
+                        attachment_path(storage_key).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            return self.json({"id": attachment_id})
+        except Exception as exc:
+            return self.json({"error": str(exc)}, 500)
 
     def backup_job_status(self, job_id):
         cleanup_expired_backup_jobs()
@@ -3043,6 +3577,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/texts":
             with connect() as con:
                 return self.json(text_rows(con))
+        if path == "/vorraden":
+            with connect() as con:
+                return self.json(vorrade_rows(con))
         if path == "/tags":
             with connect() as con:
                 return self.json(tag_rows(con))
@@ -3080,6 +3617,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({"error": "Text id is required"}, 400)
             with connect() as con:
                 return self.json(text_attachment_rows(con, text_id))
+        if path == "/vorrade-attachments":
+            parameters = parse_qs(parsed.query)
+            attachment_id = str(parameters.get("fileId", [""])[0]).strip()
+            if attachment_id:
+                return self.send_vorrade_attachment(
+                    attachment_id,
+                    str(parameters.get("download", [""])[0]) == "1",
+                    str(parameters.get("original", [""])[0]) == "1",
+                )
+            vorrade_id = str(parameters.get("vorradeId", [""])[0]).strip()
+            if not vorrade_id:
+                return self.json({"error": "Vorrade id is required"}, 400)
+            with connect() as con:
+                return self.json(vorrade_attachment_rows(con, vorrade_id))
         if path != "/services":
             return self.json({"error": "Not found"}, 404)
         with connect() as con:
@@ -3103,10 +3654,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.create_song()
         if path == "/texts":
             return self.create_text()
+        if path == "/vorraden":
+            return self.create_vorrade()
         if path == "/tags":
             return self.create_tag()
         if path == "/text-attachments":
             return self.create_text_attachment()
+        if path == "/vorrade-attachments":
+            return self.create_vorrade_attachment()
         if path != "/services":
             return self.json({"error": "Not found"}, 404)
         try:
@@ -3206,10 +3761,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.update_song()
         if path == "/texts":
             return self.update_text()
+        if path == "/vorraden":
+            return self.update_vorrade()
         if path == "/tags":
             return self.update_tag()
         if path == "/text-attachments":
             return self.update_text_attachment()
+        if path == "/vorrade-attachments":
+            return self.update_vorrade_attachment()
         if path != "/services":
             return self.json({"error": "Not found"}, 404)
         try:
@@ -3225,6 +3784,7 @@ class Handler(BaseHTTPRequestHandler):
                 existing = con.execute(
                     """SELECT service.id, service.service_type,
                               service.service_date, service.text_id,
+                              service.vorrade_id,
                               member.intent AS progress_intent
                          FROM services service
                     LEFT JOIN lehr_progress_services member
@@ -3250,12 +3810,19 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 vorrade_id = None
                 vorrade_by = None
+                vorrade_result = (
+                    "CLEARED" if existing["vorrade_id"] else "UNCHANGED"
+                )
+                vorrade_affected_service_count = 1
                 lehr_status = None
                 if body["type"] == "LEHR":
-                    if str(body.get("vorrade", "")).strip():
-                        vorrade_id = master_id(
-                            con, "vorraden", "title", body["vorrade"].strip()
-                        )
+                    vorrade_change = resolve_service_vorrade_update(con, existing, body)
+                    vorrade_id = vorrade_change["vorrade_id"]
+                    vorrade_result = vorrade_change["vorrade_result"]
+                    vorrade_affected_service_count = vorrade_change[
+                        "affected_service_count"
+                    ]
+                    if vorrade_id:
                         if str(body.get("vorradeBy", "")).strip():
                             vorrade_by = master_id(
                                 con, "people", "name", body["vorradeBy"].strip()
@@ -3336,6 +3903,10 @@ class Handler(BaseHTTPRequestHandler):
                 record["text_action"] = text_result
                 record["affected_service_count"] = affected_service_count
                 record["removed_old_text"] = removed_old_text
+                record["vorrade_action"] = vorrade_result
+                record["vorrade_affected_service_count"] = (
+                    vorrade_affected_service_count
+                )
                 self.json(record)
         except ApiError as exc:
             self.json(exc.payload, exc.status)
@@ -3362,6 +3933,54 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/tags":
             return self.delete_tag()
+        if path == "/vorraden":
+            try:
+                body = self.body()
+                vorrade_id = str(body.get("id", "")).strip()
+                if not vorrade_id:
+                    return self.json({"error": "Vorrade id is required"}, 400)
+                with connect() as con:
+                    record = con.execute(
+                        "SELECT id FROM vorraden WHERE id = ?", (vorrade_id,)
+                    ).fetchone()
+                    if not record:
+                        return self.json({"error": "Vorrade Not Found"}, 404)
+                    service_count = con.execute(
+                        "SELECT COUNT(*) FROM services WHERE vorrade_id = ?",
+                        (vorrade_id,),
+                    ).fetchone()[0]
+                    if service_count:
+                        return self.json(
+                            {
+                                "error": (
+                                    "This Vorrade has been used in a service and cannot "
+                                    "be deleted"
+                                )
+                            },
+                            409,
+                        )
+                    attachment_paths = [
+                        attachment_path(storage_key)
+                        for row in con.execute(
+                            """SELECT storage_key, display_storage_key
+                                 FROM vorrade_attachments WHERE vorrade_id = ?""",
+                            (vorrade_id,),
+                        )
+                        for storage_key in (
+                            row["storage_key"], row["display_storage_key"]
+                        )
+                        if storage_key
+                    ]
+                    con.execute("DELETE FROM vorraden WHERE id = ?", (vorrade_id,))
+                    con.commit()
+                for file_path in attachment_paths:
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                return self.json({"id": vorrade_id})
+            except Exception as exc:
+                return self.json({"error": str(exc)}, 500)
         if path == "/texts":
             try:
                 body = self.body()
@@ -3410,34 +4029,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self.json({"error": str(exc)}, 500)
         if path == "/text-attachments":
-            try:
-                body = self.body()
-                attachment_id = str(body.get("id", "")).strip()
-                if not attachment_id:
-                    return self.json({"error": "Attachment id is required"}, 400)
-                with connect() as con:
-                    attachment = con.execute(
-                        """SELECT storage_key, display_storage_key
-                             FROM text_attachments WHERE id = ?""",
-                        (attachment_id,),
-                    ).fetchone()
-                    if not attachment:
-                        return self.json({"error": "Attachment not found"}, 404)
-                    con.execute(
-                        "DELETE FROM text_attachments WHERE id = ?", (attachment_id,)
-                    )
-                    con.commit()
-                for storage_key in (
-                    attachment["storage_key"], attachment["display_storage_key"]
-                ):
-                    if storage_key:
-                        try:
-                            attachment_path(storage_key).unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                return self.json({"id": attachment_id})
-            except Exception as exc:
-                return self.json({"error": str(exc)}, 500)
+            return self.delete_owned_attachment("text")
+        if path == "/vorrade-attachments":
+            return self.delete_owned_attachment("vorrade")
         if path != "/services":
             return self.json({"error": "Not found"}, 404)
         try:

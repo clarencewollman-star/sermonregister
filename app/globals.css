@@ -856,8 +856,19 @@ button.nav-link {
 .mobile-service-list,
 .mobile-song-list,
 .mobile-text-list,
+.mobile-vorrade-list,
 .mobile-tabbar {
   display: none;
+}
+
+.vorraden-table th:first-child,
+.vorraden-table td:first-child {
+  width: 30%;
+}
+
+.vorraden-table th:nth-child(2),
+.vorraden-table td:nth-child(2) {
+  width: 40%;
 }
 
 .mobile-service-list .list-group-item {
@@ -1010,10 +1021,33 @@ button.nav-link {
     display: none;
   }
 
+  .desktop-vorraden-table {
+    display: none;
+  }
+
   .mobile-service-list,
   .mobile-song-list,
-  .mobile-text-list {
+  .mobile-text-list,
+  .mobile-vorrade-list {
     display: flex;
+  }
+
+  .mobile-vorrade-row {
+    padding: 0.625rem 0.75rem;
+  }
+
+  .mobile-vorrade-row:active {
+    background: var(--bs-primary-bg-subtle);
+  }
+
+  .mobile-vorrade-notes {
+    display: -webkit-box;
+    margin-top: 0.15rem;
+    overflow: hidden;
+    font-size: 0.8rem;
+    line-height: 1.2;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .register-toolbar {

@@ -32,7 +32,8 @@ function loadPdfJs() {
 
 export type TextAttachment = {
   id: string;
-  text_id: string;
+  text_id?: string;
+  vorrade_id?: string;
   original_file_name: string;
   display_name: string;
   mime_type: string;
@@ -60,8 +61,11 @@ type PhotoDraft = {
 };
 
 type Props = {
-  textId: string;
-  textName: string;
+  ownerId: string;
+  ownerName: string;
+  ownerLabel: "Text" | "Vorrade";
+  ownerIdPayloadKey: "textId" | "vorradeId";
+  apiUrl: string;
   attachments: TextAttachment[];
   busy: boolean;
   setBusy: (busy: boolean) => void;
@@ -70,7 +74,6 @@ type Props = {
   onError: (message: string) => void;
 };
 
-const apiUrl = "/api/text-attachments";
 const fullCrop: PercentCrop = { unit: "%", x: 0, y: 0, width: 100, height: 100 };
 const subscribeToClient = () => () => undefined;
 const getClientSnapshot = () => true;
@@ -120,10 +123,10 @@ function photoMime(file: File) {
           : "image/jpeg";
 }
 
-function photoName(textName: string, number: number) {
+function photoName(ownerName: string, ownerLabel: string, number: number) {
   const date = new Date().toLocaleDateString("en-CA");
-  const safeText = textName.trim() || "Text";
-  return `${safeText} - Notes - ${date} - ${number}.jpg`;
+  const safeName = ownerName.trim() || ownerLabel;
+  return `${safeName} - Notes - ${date} - ${number}.jpg`;
 }
 
 async function imageElement(blob: Blob) {
@@ -251,7 +254,13 @@ function PdfCanvas({
   );
 }
 
-function PdfThumbnail({ attachment }: { attachment: TextAttachment }) {
+function PdfThumbnail({
+  attachment,
+  apiUrl,
+}: {
+  attachment: TextAttachment;
+  apiUrl: string;
+}) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -272,7 +281,7 @@ function PdfThumbnail({ attachment }: { attachment: TextAttachment }) {
       cancelled = true;
       void task?.destroy();
     };
-  }, [attachment.id]);
+  }, [apiUrl, attachment.id]);
   return document ? (
     <PdfCanvas document={document} pageNumber={1} thumbnail />
   ) : (
@@ -442,11 +451,15 @@ function PhotoReview({
 function AttachmentViewer({
   attachments,
   initialId,
+  apiUrl,
+  ownerLabel,
   onClose,
   onPosition,
 }: {
   attachments: TextAttachment[];
   initialId: string;
+  apiUrl: string;
+  ownerLabel: string;
   onClose: () => void;
   onPosition: (id: string, page: number, offset: number) => Promise<void>;
 }) {
@@ -494,7 +507,7 @@ function AttachmentViewer({
       cancelled = true;
       void task?.destroy();
     };
-  }, [attachment]);
+  }, [apiUrl, attachment]);
 
   useEffect(() => {
     if (!document || !scrollRef.current) return;
@@ -540,7 +553,7 @@ function AttachmentViewer({
     <div className="attachment-viewer" role="dialog" aria-modal="true" aria-label={attachment.display_name}>
       <header className="attachment-viewer-toolbar">
         <button className="btn btn-outline-light" type="button" onClick={saveAndClose}>
-          <i className="bi bi-arrow-left me-1" />Back To Text
+          <i className="bi bi-arrow-left me-1" />Back To {ownerLabel}
         </button>
         <div className="attachment-viewer-title">
           <strong>{attachment.display_name}</strong>
@@ -612,8 +625,11 @@ function AttachmentViewer({
 }
 
 export default function TextAttachmentManager({
-  textId,
-  textName,
+  ownerId,
+  ownerName,
+  ownerLabel,
+  ownerIdPayloadKey,
+  apiUrl,
   attachments,
   busy,
   setBusy,
@@ -641,7 +657,7 @@ export default function TextAttachmentManager({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            textId,
+            [ownerIdPayloadKey]: ownerId,
             fileName: file.name,
             displayName: file.name,
             mimeType: "application/pdf",
@@ -677,7 +693,11 @@ export default function TextAttachmentManager({
           file,
           sourceBlob,
           sourceUrl: URL.createObjectURL(sourceBlob),
-          displayName: photoName(textName, attachments.length + index + 1),
+          displayName: photoName(
+            ownerName,
+            ownerLabel,
+            attachments.length + index + 1,
+          ),
           crop: fullCrop,
           rotation: 0,
           error: "",
@@ -694,7 +714,7 @@ export default function TextAttachmentManager({
     const payload = {
       id: draft.existingId,
       action: "PHOTO_EDIT",
-      textId,
+      [ownerIdPayloadKey]: ownerId,
       fileName: draft.file.name,
       displayName: draft.displayName,
       mimeType: photoMime(draft.file),
@@ -737,7 +757,11 @@ export default function TextAttachmentManager({
     const response = await fetch(apiUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ textId, action: "REORDER", ids: next.map((item) => item.id) }),
+      body: JSON.stringify({
+        [ownerIdPayloadKey]: ownerId,
+        action: "REORDER",
+        ids: next.map((item) => item.id),
+      }),
     });
     const result = (await response.json()) as TextAttachment[] & { error?: string };
     if (!response.ok) {
@@ -807,7 +831,9 @@ export default function TextAttachmentManager({
         <div className="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
           <div>
             <h6 className="mb-0"><i className="bi bi-paperclip me-2" />Private Attachments</h6>
-            <small className="text-body-secondary">Keep PDFs And Photos With This Text.</small>
+            <small className="text-body-secondary">
+              Keep PDFs And Photos With This {ownerLabel}.
+            </small>
           </div>
           <div className="d-flex flex-wrap gap-2">
             <label className={`btn btn-outline-primary btn-sm mb-0 ${busy ? "disabled" : ""}`}>
@@ -829,7 +855,7 @@ export default function TextAttachmentManager({
             <div className="list-group-item attachment-list-item" key={attachment.id}>
               <button className="attachment-thumbnail" type="button" onClick={() => setViewerId(attachment.id)} aria-label={`View ${attachment.display_name}`}>
                 {attachment.mime_type === "application/pdf" ? (
-                  <PdfThumbnail attachment={attachment} />
+                  <PdfThumbnail attachment={attachment} apiUrl={apiUrl} />
                 ) : (
                   <img src={`${apiUrl}?fileId=${encodeURIComponent(attachment.id)}&view=1&v=${encodeURIComponent(attachment.updated_at)}`} alt="" />
                 )}
@@ -872,9 +898,11 @@ export default function TextAttachmentManager({
       )}
       {viewerId && viewerAttachments.some((item) => item.id === viewerId) && (
         <BodyPortal>
-          <AttachmentViewer
-            attachments={viewerAttachments}
-            initialId={viewerId}
+        <AttachmentViewer
+          attachments={viewerAttachments}
+          initialId={viewerId}
+          apiUrl={apiUrl}
+          ownerLabel={ownerLabel}
             onClose={() => setViewerId("")}
             onPosition={savePosition}
           />

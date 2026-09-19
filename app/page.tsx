@@ -31,6 +31,7 @@ type Service = {
   textTags: TagRecord[];
   textTagIds: string[];
   textBy: string;
+  vorradeId: string;
   vorrade: string;
   vorradeBy: string;
   status: string;
@@ -64,6 +65,7 @@ type ApiService = {
   text_tag_records: ApiTagRecord[];
   text_tags: string;
   text_by: string | null;
+  vorrade_id: string | null;
   vorrade: string | null;
   vorrade_by: string | null;
   lehr_status: "IN_PROGRESS" | "FINISHED" | null;
@@ -89,6 +91,8 @@ type ApiService = {
   text_action?: "UNCHANGED" | "RENAMED" | "RELINKED" | "CREATED";
   affected_service_count?: number;
   removed_old_text?: boolean;
+  vorrade_action?: "UNCHANGED" | "RENAMED" | "RELINKED" | "CREATED" | "CLEARED";
+  vorrade_affected_service_count?: number;
 };
 
 type Song = {
@@ -120,6 +124,57 @@ type ApiPerson = {
   id: string;
   name: string;
   last_used: string | null;
+};
+
+type VorradeUsageEntry = {
+  id: string;
+  dateValue: string;
+  date: string;
+  text: string;
+};
+
+type ApiVorradeUsageEntry = {
+  id: string;
+  date: string;
+  text: string;
+};
+
+type VorradeRecord = {
+  id: string;
+  title: string;
+  notes: string;
+  timesUsed: number;
+  serviceCount: number;
+  lastUsedValue: string;
+  lastUsed: string;
+  usageHistory: VorradeUsageEntry[];
+  attachmentCount: number;
+};
+
+type ApiVorradeRecord = {
+  id: string;
+  title: string;
+  notes: string | null;
+  times_used: number;
+  service_count: number;
+  last_used: string | null;
+  usage_history: ApiVorradeUsageEntry[];
+  attachment_count: number;
+  vorrade_action?: "UPDATED" | "RENAMED" | "MERGED";
+  affected_service_count?: number;
+  merged_from_id?: string;
+};
+
+type VorradePayload = {
+  title: string;
+  notes: string;
+};
+
+type VorradeMergeRequest = {
+  source: VorradeRecord;
+  target: VorradeRecord;
+  payload: VorradePayload;
+  notesConflict: boolean;
 };
 
 type TextRecord = {
@@ -272,6 +327,7 @@ type ProgressMatch = {
 };
 type SongSortField = "title" | "tags" | "timesUsed";
 type TextSortField = "text" | "tags" | "timesUsed" | "lastUsed";
+type VorradeSortField = "title" | "timesUsed" | "lastUsed";
 
 const navItems = [
   { label: "Register", icon: "bi-table" },
@@ -301,7 +357,9 @@ const apiUrl = () => "/api/services";
 const songsApiUrl = () => "/api/songs";
 const peopleApiUrl = () => "/api/people";
 const textsApiUrl = () => "/api/texts";
+const vorradenApiUrl = () => "/api/vorraden";
 const textAttachmentsApiUrl = () => "/api/text-attachments";
+const vorradeAttachmentsApiUrl = () => "/api/vorrade-attachments";
 const progressMatchApiUrl = () => "/api/progress-match";
 const tagsApiUrl = () => "/api/tags";
 const backupsApiUrl = () => "/api/backups";
@@ -392,6 +450,7 @@ const fromApi = (row: ApiService): Service => {
     textTags: (row.text_tag_records || []).map(tagFromApi),
     textTagIds: (row.text_tag_records || []).map((tag) => tag.id),
     textBy: row.text_by || "",
+    vorradeId: row.vorrade_id || "",
     vorrade: row.vorrade || "",
     vorradeBy: row.vorrade_by || "",
     status:
@@ -478,6 +537,33 @@ const textFromApi = (row: ApiTextRecord): TextRecord => ({
   attachmentCount: Number(row.attachment_count || 0),
 });
 
+const vorradeFromApi = (row: ApiVorradeRecord): VorradeRecord => ({
+  id: row.id,
+  title: row.title,
+  notes: row.notes || "",
+  timesUsed: Number(row.times_used || 0),
+  serviceCount: Number(row.service_count || 0),
+  lastUsedValue: row.last_used || "",
+  lastUsed: row.last_used
+    ? new Date(`${row.last_used}T12:00:00`).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "Never",
+  usageHistory: (row.usage_history || []).map((entry) => ({
+    id: entry.id,
+    dateValue: entry.date,
+    date: new Date(`${entry.date}T12:00:00`).toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }),
+    text: entry.text,
+  })),
+  attachmentCount: Number(row.attachment_count || 0),
+});
+
 const personFromApi = (row: ApiPerson): Person => ({
   id: row.id,
   name: row.name,
@@ -529,6 +615,15 @@ function textUsageSummary(record: TextRecord) {
   return parts.join(" · ");
 }
 
+function vorradeUsageSummary(record: VorradeRecord) {
+  const parts =
+    record.timesUsed > 0
+      ? [`${record.timesUsed} Uses`, `Last ${record.lastUsed}`]
+      : ["Never Used"];
+  if (record.attachmentCount) parts.push(`${record.attachmentCount} Attachments`);
+  return parts.join(" · ");
+}
+
 function compareTextRecords(
   left: TextRecord,
   right: TextRecord,
@@ -555,6 +650,24 @@ function compareTextRecords(
               numeric: true,
               sensitivity: "base",
             });
+  return direction === "asc" ? comparison : -comparison;
+}
+
+function compareVorradeRecords(
+  left: VorradeRecord,
+  right: VorradeRecord,
+  field: VorradeSortField,
+  direction: "asc" | "desc",
+) {
+  const comparison =
+    field === "timesUsed"
+      ? left.timesUsed - right.timesUsed
+      : field === "lastUsed"
+        ? left.lastUsedValue.localeCompare(right.lastUsedValue)
+        : left.title.localeCompare(right.title, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
   return direction === "asc" ? comparison : -comparison;
 }
 
@@ -824,6 +937,100 @@ function TextChoiceInput({
   );
 }
 
+function VorradeChoiceInput({
+  id,
+  name,
+  value,
+  choices,
+  onChange,
+}: {
+  id: string;
+  name: string;
+  value: string;
+  choices: VorradeRecord[];
+  onChange: (value: string, selectedId: string) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const query = value.trim().toLowerCase();
+  const suggestions = choices
+    .filter((record) => !query || record.title.toLowerCase().includes(query))
+    .slice(0, 8);
+
+  return (
+    <div
+      className="service-text-choice"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
+    >
+      <input
+        className="form-control"
+        id={id}
+        name={name}
+        value={value}
+        autoComplete="off"
+        autoCorrect="off"
+        aria-autocomplete="list"
+        aria-controls={`${id}-suggestions`}
+        aria-expanded={focused}
+        role="combobox"
+        onFocus={() => setFocused(true)}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          const exact = choices.find(
+            (record) =>
+              record.title.localeCompare(nextValue, undefined, {
+                sensitivity: "base",
+              }) === 0,
+          );
+          onChange(nextValue, exact?.id || "");
+          setFocused(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setFocused(false);
+        }}
+      />
+      {focused && (
+        <div
+          className="list-group service-text-suggestions shadow-sm"
+          id={`${id}-suggestions`}
+          role="listbox"
+        >
+          {suggestions.map((record) => (
+            <button
+              className="list-group-item list-group-item-action text-start"
+              type="button"
+              role="option"
+              aria-selected={record.title === value}
+              key={record.id}
+              onClick={() => {
+                onChange(record.title, record.id);
+                setFocused(false);
+              }}
+            >
+              <span className="d-block fw-semibold text-truncate">
+                {record.title}
+              </span>
+              {record.notes && (
+                <small className="d-block text-body-secondary text-truncate">
+                  {firstLine(record.notes)}
+                </small>
+              )}
+            </button>
+          ))}
+          {!suggestions.length && value.trim() && (
+            <div className="list-group-item text-body-secondary small">
+              No Existing Vorrade Matches. This New Vorrade Will Be Used.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TagFilter({
   tags,
   selectedIds,
@@ -1045,6 +1252,9 @@ export default function Home() {
   const [editTextValue, setEditTextValue] = useState("");
   const [editTextSelectedId, setEditTextSelectedId] = useState("");
   const [editCreateSeparateText, setEditCreateSeparateText] = useState(false);
+  const [editVorradeValue, setEditVorradeValue] = useState("");
+  const [editVorradeSelectedId, setEditVorradeSelectedId] = useState("");
+  const [editCreateSeparateVorrade, setEditCreateSeparateVorrade] = useState(false);
   const [selected, setSelected] = useState<Service | null>(null);
   const [rowVersion, setRowVersion] = useState(0);
   const [saveError, setSaveError] = useState("");
@@ -1091,6 +1301,19 @@ export default function Home() {
   >({});
   const [textAttachments, setTextAttachments] = useState<TextAttachment[]>([]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [vorraden, setVorraden] = useState<VorradeRecord[]>([]);
+  const [vorradeQuery, setVorradeQuery] = useState("");
+  const [vorradeSort, setVorradeSort] = useState<VorradeSortField>("title");
+  const [vorradeSortDirection, setVorradeSortDirection] = useState<"asc" | "desc">("asc");
+  const [vorradeEditor, setVorradeEditor] = useState<VorradeRecord | "new" | null>(null);
+  const [vorradeError, setVorradeError] = useState("");
+  const [vorradeAutoSaveStatus, setVorradeAutoSaveStatus] = useState("");
+  const vorradeAutoSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const vorradeAutoSaveFailed = useRef(false);
+  const vorradeFormRef = useRef<HTMLFormElement>(null);
+  const [vorradeMergeRequest, setVorradeMergeRequest] = useState<VorradeMergeRequest | null>(null);
+  const [vorradeMergeNotesChoice, setVorradeMergeNotesChoice] = useState<"SOURCE" | "TARGET" | "">("");
+  const [vorradeAttachments, setVorradeAttachments] = useState<TextAttachment[]>([]);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [tagManagerQuery, setTagManagerQuery] = useState("");
   const [tagManagerError, setTagManagerError] = useState("");
@@ -1226,6 +1449,18 @@ export default function Home() {
       })
       .then((rows) => setSongs((rows as ApiSong[]).map(songFromApi)))
       .catch(() => setSongError("The Songs Could Not Be Loaded."));
+  }, []);
+
+  useEffect(() => {
+    fetch(vorradenApiUrl())
+      .then((response) => {
+        if (!response.ok) throw new Error("Vorraden unavailable");
+        return response.json();
+      })
+      .then((rows) =>
+        setVorraden((rows as ApiVorradeRecord[]).map(vorradeFromApi)),
+      )
+      .catch(() => setVorradeError("The Vorraden Could Not Be Loaded."));
   }, []);
 
   useEffect(() => {
@@ -1392,6 +1627,22 @@ export default function Home() {
     [texts, textQuery, textSort, textSortDirection, selectedTagIds],
   );
 
+  const visibleVorraden = useMemo(() => {
+    const filtered = vorraden.filter((record) =>
+      `${record.title} ${record.notes}`
+        .toLowerCase()
+        .includes(vorradeQuery.toLowerCase()),
+    );
+    return filtered.sort((left, right) =>
+      compareVorradeRecords(
+        left,
+        right,
+        vorradeSort,
+        vorradeSortDirection,
+      ),
+    );
+  }, [vorraden, vorradeQuery, vorradeSort, vorradeSortDirection]);
+
   const selectedTextIdSet = useMemo(
     () => new Set(selectedTextIds),
     [selectedTextIds],
@@ -1435,6 +1686,17 @@ export default function Home() {
     [texts],
   );
 
+  const vorradeChoices = useMemo(
+    () =>
+      [...vorraden].sort((left, right) =>
+        left.title.localeCompare(right.title, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      ),
+    [vorraden],
+  );
+
   const editTextDecision = useMemo(() => {
     if (!selected) {
       return {
@@ -1471,6 +1733,82 @@ export default function Home() {
       showChoices: true,
     };
   }, [editCreateSeparateText, editTextSelectedId, editTextValue, selected, texts]);
+
+  const editVorradeDecision = useMemo(() => {
+    const source =
+      selected?.vorradeId
+        ? vorraden.find((record) => record.id === selected.vorradeId) || null
+        : null;
+    if (!selected || editKind !== "Lehr") {
+      return {
+        action: "CLEAR" as const,
+        target: null as VorradeRecord | null,
+        source,
+        changed: false,
+        showChoices: false,
+      };
+    }
+    const changed = editVorradeValue !== selected.vorrade;
+    if (!editVorradeValue.trim()) {
+      return {
+        action: "CLEAR" as const,
+        target: null,
+        source,
+        changed: Boolean(source),
+        showChoices: false,
+      };
+    }
+    const exact =
+      vorraden.find((record) => record.id === editVorradeSelectedId) ||
+      vorraden.find(
+        (record) =>
+          record.title.localeCompare(editVorradeValue, undefined, {
+            sensitivity: "base",
+          }) === 0,
+      ) ||
+      null;
+    if (!changed && source) {
+      return {
+        action: "KEEP" as const,
+        target: source,
+        source,
+        changed,
+        showChoices: false,
+      };
+    }
+    if (exact && exact.id !== selected.vorradeId) {
+      return {
+        action: "RELINK" as const,
+        target: exact,
+        source,
+        changed: true,
+        showChoices: false,
+      };
+    }
+    if (!source) {
+      return {
+        action: "CREATE" as const,
+        target: null,
+        source,
+        changed: true,
+        showChoices: false,
+      };
+    }
+    return {
+      action: editCreateSeparateVorrade ? ("CREATE" as const) : ("RENAME" as const),
+      target: null,
+      source,
+      changed: true,
+      showChoices: true,
+    };
+  }, [
+    editCreateSeparateVorrade,
+    editKind,
+    editVorradeSelectedId,
+    editVorradeValue,
+    selected,
+    vorraden,
+  ]);
 
   const textDescriptionsByTitle = useMemo(
     () => new Map(texts.map((record) => [record.text, record.description])),
@@ -1517,6 +1855,17 @@ export default function Home() {
     }
     setTextSort(field);
     setTextSortDirection(
+      field === "timesUsed" || field === "lastUsed" ? "desc" : "asc",
+    );
+  }
+
+  function changeVorradeSort(field: VorradeSortField) {
+    if (vorradeSort === field) {
+      setVorradeSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setVorradeSort(field);
+    setVorradeSortDirection(
       field === "timesUsed" || field === "lastUsed" ? "desc" : "asc",
     );
   }
@@ -1626,6 +1975,13 @@ export default function Home() {
     setTexts(rows.map(textFromApi));
   }
 
+  async function refreshVorraden() {
+    const response = await fetch(vorradenApiUrl(), { cache: "no-store" });
+    if (!response.ok) throw new Error("Could Not Refresh Vorraden");
+    const rows = (await response.json()) as ApiVorradeRecord[];
+    setVorraden(rows.map(vorradeFromApi));
+  }
+
   async function refreshTags() {
     const response = await fetch(tagsApiUrl(), { cache: "no-store" });
     if (!response.ok) throw new Error("Could Not Refresh Tags");
@@ -1715,6 +2071,20 @@ export default function Home() {
     setTextAttachments(result);
   }
 
+  async function loadVorradeAttachments(vorradeId: string) {
+    const response = await fetch(
+      `${vorradeAttachmentsApiUrl()}?vorradeId=${encodeURIComponent(vorradeId)}`,
+      { cache: "no-store" },
+    );
+    const result = (await response.json()) as TextAttachment[] | { error?: string };
+    if (!response.ok || !Array.isArray(result)) {
+      throw new Error(
+        (!Array.isArray(result) && result.error) || "Could Not Load Attachments",
+      );
+    }
+    setVorradeAttachments(result);
+  }
+
   async function createService(payload: Record<string, string>) {
     setSaveError("");
     setSaveNotice("");
@@ -1729,6 +2099,9 @@ export default function Home() {
     setSaveNotice("Service Saved");
     void refreshSongs().catch(() => setSongError("The Songs Could Not Be Refreshed."));
     void refreshTexts().catch(() => setTextError("The Texts Could Not Be Refreshed."));
+    void refreshVorraden().catch(() =>
+      setVorradeError("The Vorraden Could Not Be Refreshed."),
+    );
     void refreshPeople().catch(() =>
       setSaveError("The People List Could Not Be Refreshed."),
     );
@@ -1752,6 +2125,16 @@ export default function Home() {
     ) {
       return;
     }
+    if (
+      editVorradeDecision.action === "RENAME" &&
+      editVorradeDecision.source &&
+      editVorradeDecision.source.serviceCount > 1 &&
+      !window.confirm(
+        `Rename This Vorrade In ${editVorradeDecision.source.serviceCount} Services?`,
+      )
+    ) {
+      return;
+    }
     setSaveError("");
     setSaveNotice("");
     try {
@@ -1770,7 +2153,13 @@ export default function Home() {
           targetTextId:
             editTextDecision.action === "RELINK" ? editTextDecision.target?.id || "" : "",
           textBy: String(form.get("editTextBy")),
-          vorrade: String(form.get("editVorrade") || ""),
+          vorrade: editVorradeValue,
+          currentVorradeId: selected.vorradeId,
+          vorradeAction: editVorradeDecision.action,
+          targetVorradeId:
+            editVorradeDecision.action === "RELINK"
+              ? editVorradeDecision.target?.id || ""
+              : "",
           vorradeBy: String(form.get("editVorradeBy") || ""),
           status: editProgressStatus,
           progressIntent: editKind === "Lehr" ? editProgressIntent : "AUTO",
@@ -1784,6 +2173,7 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error || "Could Not Update Service");
       await refreshServices();
       await refreshTexts();
+      await refreshVorraden();
       const resultMessages: Record<string, string> = {
         RENAMED: `Service Saved — Text Renamed In ${result.affected_service_count || 1} ${
           Number(result.affected_service_count || 1) === 1 ? "Service" : "Services"
@@ -1793,6 +2183,21 @@ export default function Home() {
         UNCHANGED: "Service Saved",
       };
       setSaveNotice(resultMessages[result.text_action || "UNCHANGED"] || "Service Saved");
+      if (result.vorrade_action === "RENAMED") {
+        setSaveNotice(
+          `Service Saved — Vorrade Renamed In ${
+            result.vorrade_affected_service_count || 1
+          } ${
+            Number(result.vorrade_affected_service_count || 1) === 1
+              ? "Service"
+              : "Services"
+          }`,
+        );
+      } else if (result.vorrade_action === "RELINKED") {
+        setSaveNotice("Service Saved — Linked To Existing Vorrade");
+      } else if (result.vorrade_action === "CREATED") {
+        setSaveNotice("Service Saved — New Separate Vorrade Created");
+      }
       if (result.removed_old_text) {
         setSaveNotice((message) => `${message} — Empty Unused Text Removed`);
       }
@@ -1831,6 +2236,7 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error || "Could Not Delete Service");
       await refreshServices();
       await refreshTexts();
+      await refreshVorraden();
       setSaveNotice(
         result.progress_reassigned
           ? "Service Deleted — Lehr Progress Moved To The Next Service"
@@ -1866,6 +2272,14 @@ export default function Home() {
       scriptureReference: String(form.get("textScriptureReference") || ""),
       songsForText: String(form.get("textSongsForText") || ""),
       notes: String(form.get("textNotes") || ""),
+    };
+  }
+
+  function vorradePayload(formElement: HTMLFormElement): VorradePayload {
+    const form = new FormData(formElement);
+    return {
+      title: String(form.get("vorradeTitle") || "").trim(),
+      notes: String(form.get("vorradeNotes") || ""),
     };
   }
 
@@ -1914,6 +2328,31 @@ export default function Home() {
     if (textAutoSaveFailed.current) return;
     setTextEditor(null);
   }, [attachmentBusy, textEditor]);
+
+  const closeVorradeEditor = useCallback(async () => {
+    if (!vorradeEditor) return;
+    if (attachmentBusy) {
+      setVorradeError("Please Wait For The Attachment To Finish Before Closing.");
+      return;
+    }
+    if (
+      vorradeEditor === "new" &&
+      formHasEnteredValues(vorradeFormRef.current) &&
+      !window.confirm("Close Without Saving This New Vorrade?")
+    ) {
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      vorradeFormRef.current?.contains(activeElement)
+    ) {
+      activeElement.blur();
+    }
+    await vorradeAutoSaveQueue.current;
+    if (vorradeAutoSaveFailed.current) return;
+    setVorradeEditor(null);
+  }, [attachmentBusy, vorradeEditor]);
 
   function autoSaveSong(event: FocusEvent<HTMLFormElement>) {
     if (!songEditor || songEditor === "new") return;
@@ -2367,6 +2806,277 @@ export default function Home() {
     }
   }
 
+  function openVorradeEditor(record: VorradeRecord | "new") {
+    setVorradeError("");
+    setVorradeAutoSaveStatus("");
+    vorradeAutoSaveFailed.current = false;
+    setVorradeMergeRequest(null);
+    setVorradeMergeNotesChoice("");
+    setVorradeAttachments([]);
+    setVorradeEditor(record);
+    if (record !== "new") {
+      void loadVorradeAttachments(record.id).catch((error) =>
+        setVorradeError(
+          error instanceof Error ? error.message : "Could Not Load Attachments",
+        ),
+      );
+    }
+  }
+
+  function autoSaveVorrade(event: FocusEvent<HTMLFormElement>) {
+    if (!vorradeEditor || vorradeEditor === "new") return;
+    const target = event.target as HTMLElement;
+    if (!target.matches("input[name], textarea[name]")) return;
+    const payload = vorradePayload(event.currentTarget);
+    if (!payload.title) {
+      vorradeAutoSaveFailed.current = true;
+      setVorradeError("Vorrade Is Required.");
+      return;
+    }
+    const titleChanged = payload.title !== vorradeEditor.title;
+    if (titleChanged) {
+      const mergeTarget = vorraden.find(
+        (record) =>
+          record.id !== vorradeEditor.id &&
+          record.title.localeCompare(payload.title, undefined, {
+            sensitivity: "base",
+          }) === 0,
+      );
+      if (mergeTarget) {
+        setVorradeMergeNotesChoice("");
+        setVorradeMergeRequest({
+          source: vorradeEditor,
+          target: mergeTarget,
+          payload,
+          notesConflict: Boolean(
+            payload.notes.trim() &&
+              mergeTarget.notes.trim() &&
+              payload.notes.trim() !== mergeTarget.notes.trim(),
+          ),
+        });
+        setVorradeAutoSaveStatus("Waiting For Merge Confirmation");
+        return;
+      }
+      if (
+        vorradeEditor.serviceCount > 1 &&
+        !window.confirm(
+          `Rename This Vorrade In ${vorradeEditor.serviceCount} Services?`,
+        )
+      ) {
+        const titleInput = event.currentTarget.elements.namedItem("vorradeTitle");
+        if (titleInput instanceof HTMLInputElement) {
+          titleInput.value = vorradeEditor.title;
+        }
+        setVorradeAutoSaveStatus("Rename Cancelled");
+        return;
+      }
+    }
+    const vorradeId = vorradeEditor.id;
+    vorradeAutoSaveQueue.current = vorradeAutoSaveQueue.current.then(async () => {
+      vorradeAutoSaveFailed.current = false;
+      setVorradeAutoSaveStatus("Saving...");
+      setVorradeError("");
+      try {
+        const response = await fetch(vorradenApiUrl(), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: vorradeId, ...payload }),
+        });
+        const result = (await response.json()) as ApiVorradeRecord & {
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(result.error || "Could Not Save Vorrade");
+        }
+        const saved = vorradeFromApi(result);
+        setVorradeEditor(saved);
+        setVorraden((current) =>
+          current
+            .map((record) => (record.id === saved.id ? saved : record))
+            .sort((left, right) => left.title.localeCompare(right.title)),
+        );
+        if (result.vorrade_action === "RENAMED") await refreshServices();
+        setVorradeAutoSaveStatus(
+          result.vorrade_action === "RENAMED"
+            ? `Saved Automatically — Renamed In ${
+                result.affected_service_count || 1
+              } ${
+                Number(result.affected_service_count || 1) === 1
+                  ? "Service"
+                  : "Services"
+              }`
+            : "Saved Automatically",
+        );
+      } catch (error) {
+        vorradeAutoSaveFailed.current = true;
+        setVorradeError(
+          error instanceof Error ? error.message : "Could Not Save Vorrade",
+        );
+        setVorradeAutoSaveStatus("Automatic Save Failed");
+      }
+    });
+  }
+
+  function cancelVorradeMerge() {
+    if (vorradeMergeRequest && vorradeFormRef.current) {
+      const titleInput = vorradeFormRef.current.elements.namedItem("vorradeTitle");
+      if (titleInput instanceof HTMLInputElement) {
+        titleInput.value = vorradeMergeRequest.source.title;
+      }
+    }
+    setVorradeMergeRequest(null);
+    setVorradeMergeNotesChoice("");
+    setVorradeAutoSaveStatus("Merge Cancelled");
+  }
+
+  async function mergeVorraden() {
+    if (!vorradeMergeRequest) return;
+    if (vorradeMergeRequest.notesConflict && !vorradeMergeNotesChoice) {
+      setVorradeError("Choose Which Notes To Keep Before Merging.");
+      return;
+    }
+    await vorradeAutoSaveQueue.current;
+    if (vorradeAutoSaveFailed.current) return;
+    setVorradeError("");
+    setVorradeAutoSaveStatus("Merging...");
+    try {
+      const response = await fetch(vorradenApiUrl(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: vorradeMergeRequest.source.id,
+          ...vorradeMergeRequest.payload,
+          mergeTargetId: vorradeMergeRequest.target.id,
+          notesChoice: vorradeMergeNotesChoice,
+        }),
+      });
+      const result = (await response.json()) as ApiVorradeRecord & {
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error || "Could Not Merge Vorraden");
+      const saved = vorradeFromApi(result);
+      setVorraden((current) =>
+        current
+          .filter(
+            (record) =>
+              record.id !== vorradeMergeRequest.source.id &&
+              record.id !== saved.id,
+          )
+          .concat(saved)
+          .sort((left, right) => left.title.localeCompare(right.title)),
+      );
+      setVorradeEditor(saved);
+      setVorradeMergeRequest(null);
+      setVorradeMergeNotesChoice("");
+      await Promise.all([
+        refreshServices(),
+        loadVorradeAttachments(saved.id),
+      ]);
+      vorradeAutoSaveFailed.current = false;
+      setVorradeAutoSaveStatus(
+        "Vorraden Merged — Notes, Attachments, And History Preserved",
+      );
+    } catch (error) {
+      vorradeAutoSaveFailed.current = true;
+      setVorradeError(
+        error instanceof Error ? error.message : "Could Not Merge Vorraden",
+      );
+      setVorradeAutoSaveStatus("Merge Failed");
+    }
+  }
+
+  async function saveVorrade(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!vorradeEditor) return;
+    const formElement = event.currentTarget;
+    await vorradeAutoSaveQueue.current;
+    const payload = vorradePayload(formElement);
+    if (!payload.title) {
+      setVorradeError("Vorrade Is Required.");
+      return;
+    }
+    const currentEditor = vorradeEditor;
+    vorradeAutoSaveFailed.current = false;
+    setVorradeAutoSaveStatus("Saving...");
+    setVorradeError("");
+    try {
+      const response = await fetch(vorradenApiUrl(), {
+        method: currentEditor === "new" ? "POST" : "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: currentEditor === "new" ? "" : currentEditor.id,
+          ...payload,
+        }),
+      });
+      const result = (await response.json()) as ApiVorradeRecord & {
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error || "Could Not Save Vorrade");
+      const saved = vorradeFromApi(result);
+      setVorraden((current) => {
+        const next =
+          currentEditor === "new"
+            ? [...current, saved]
+            : current.map((record) => (record.id === saved.id ? saved : record));
+        return next.sort((left, right) => left.title.localeCompare(right.title));
+      });
+      setVorradeEditor(saved);
+      await refreshServices();
+      setVorradeAutoSaveStatus("Saved");
+    } catch (error) {
+      vorradeAutoSaveFailed.current = true;
+      setVorradeError(
+        error instanceof Error ? error.message : "Could Not Save Vorrade",
+      );
+      setVorradeAutoSaveStatus("Save Failed");
+    }
+  }
+
+  async function deleteVorrade() {
+    if (
+      !vorradeEditor ||
+      vorradeEditor === "new" ||
+      vorradeEditor.serviceCount > 0
+    ) {
+      return;
+    }
+    const contents = [
+      vorradeEditor.notes ? "Notes" : "",
+      vorradeAttachments.length
+        ? `${vorradeAttachments.length} ${
+            vorradeAttachments.length === 1 ? "Attachment" : "Attachments"
+          }`
+        : "",
+    ].filter(Boolean);
+    const warning = contents.length
+      ? `Delete This Vorrade? It Contains ${contents.join(", ")}. This Cannot Be Undone.`
+      : "Delete This Empty Vorrade? This Cannot Be Undone.";
+    if (!window.confirm(warning)) return;
+    await vorradeAutoSaveQueue.current;
+    if (vorradeAutoSaveFailed.current) return;
+    setVorradeError("");
+    try {
+      const response = await fetch(vorradenApiUrl(), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: vorradeEditor.id }),
+      });
+      const result = (await response.json()) as { id?: string; error?: string };
+      if (!response.ok) {
+        throw new Error(result.error || "Could Not Delete Vorrade");
+      }
+      setVorraden((current) =>
+        current.filter((record) => record.id !== vorradeEditor.id),
+      );
+      setVorradeAttachments([]);
+      setVorradeEditor(null);
+    } catch (error) {
+      setVorradeError(
+        error instanceof Error ? error.message : "Could Not Delete Vorrade",
+      );
+    }
+  }
+
   function openSongFromRegister(title: string) {
     const song = songs.find(
       (record) => record.title.localeCompare(title, undefined, { sensitivity: "base" }) === 0,
@@ -2382,6 +3092,21 @@ export default function Home() {
     );
     if (!record) return;
     openTextEditor(record);
+  }
+
+  function openVorradeFromRegister(service: Service) {
+    const record =
+      (service.vorradeId
+        ? vorraden.find((candidate) => candidate.id === service.vorradeId)
+        : null) ||
+      vorraden.find(
+        (candidate) =>
+          candidate.title.localeCompare(service.vorrade, undefined, {
+            sensitivity: "base",
+          }) === 0,
+      );
+    if (!record) return;
+    openVorradeEditor(record);
   }
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -2531,6 +3256,9 @@ export default function Home() {
     setEditTextValue(service.text);
     setEditTextSelectedId(service.textId);
     setEditCreateSeparateText(false);
+    setEditVorradeValue(service.vorrade);
+    setEditVorradeSelectedId(service.vorradeId);
+    setEditCreateSeparateVorrade(false);
     setSelected(service);
   }
 
@@ -2553,19 +3281,28 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!songEditor && !textEditor) return;
+    if (!songEditor && !textEditor && !vorradeEditor) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       if (songEditor) {
         void closeSongEditor();
-      } else {
+      } else if (textEditor) {
         void closeTextEditor();
+      } else {
+        void closeVorradeEditor();
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [closeSongEditor, closeTextEditor, songEditor, textEditor]);
+  }, [
+    closeSongEditor,
+    closeTextEditor,
+    closeVorradeEditor,
+    songEditor,
+    textEditor,
+    vorradeEditor,
+  ]);
 
   if (textReportOpen) {
     return (
@@ -2695,6 +3432,12 @@ export default function Home() {
                     <span className="mobile-page-count d-sm-none">
                       <span aria-hidden="true"> · </span>
                       {visibleTexts.length}
+                    </span>
+                  )}
+                  {active === "Vorraden" && (
+                    <span className="mobile-page-count d-sm-none">
+                      <span aria-hidden="true"> · </span>
+                      {visibleVorraden.length}
                     </span>
                   )}
                 </h3>
@@ -3176,7 +3919,20 @@ export default function Home() {
                             )}
                           </td>
                           <td className="person-column">{service.textBy}</td>
-                          <td className="vorrade-column">{service.vorrade}</td>
+                          <td className="vorrade-column">
+                            {service.vorrade ? (
+                              <button
+                                className="btn btn-link register-record-link"
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openVorradeFromRegister(service);
+                                }}
+                              >
+                                {service.vorrade}
+                              </button>
+                            ) : null}
+                          </td>
                           <td className="person-column">{service.vorradeBy}</td>
                           <td className="note-cell notes-column">{service.notes}</td>
                           <td className="status-column">
@@ -3836,6 +4592,240 @@ export default function Home() {
                   <div className="card-body text-center text-body-secondary py-5">
                     <i className="bi bi-journal-text fs-2 d-block mb-2" />
                     No Texts Match Your Search.
+                  </div>
+                )}
+              </div>
+            ) : active === "Vorraden" ? (
+              <div className="card card-primary card-outline shadow-sm vorraden-card">
+                <div className="card-header border-bottom">
+                  <div className="row g-2 align-items-center">
+                    <div className="col-12 col-md">
+                      <div className="input-group">
+                        <span className="input-group-text">
+                          <i className="bi bi-search" />
+                        </span>
+                        <input
+                          className="form-control"
+                          value={vorradeQuery}
+                          onChange={(event) => setVorradeQuery(event.target.value)}
+                          placeholder="Search Vorraden Or Notes"
+                          aria-label="Search Vorraden"
+                        />
+                      </div>
+                    </div>
+                    <div className="col-8 d-md-none">
+                      <select
+                        className="form-select"
+                        value={vorradeSort}
+                        onChange={(event) => {
+                          const field = event.target.value as VorradeSortField;
+                          setVorradeSort(field);
+                          setVorradeSortDirection(
+                            field === "title" ? "asc" : "desc",
+                          );
+                        }}
+                        aria-label="Sort Vorraden By"
+                      >
+                        <option value="title">Sort By Vorrade</option>
+                        <option value="timesUsed">Sort By Times Used</option>
+                        <option value="lastUsed">Sort By Last Used</option>
+                      </select>
+                    </div>
+                    <div className="col-4 d-md-none">
+                      <button
+                        className="btn btn-outline-secondary w-100"
+                        type="button"
+                        onClick={() =>
+                          setVorradeSortDirection((current) =>
+                            current === "asc" ? "desc" : "asc",
+                          )
+                        }
+                        aria-label={
+                          vorradeSortDirection === "asc"
+                            ? "Sort Descending"
+                            : "Sort Ascending"
+                        }
+                      >
+                        <i
+                          className={`bi ${
+                            vorradeSortDirection === "asc"
+                              ? "bi-sort-up"
+                              : "bi-sort-down"
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    <div className="col-auto d-none d-md-block">
+                      <span className="badge text-bg-primary rounded-pill">
+                        {visibleVorraden.length} Vorraden
+                      </span>
+                    </div>
+                    <div className="col-auto">
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => openVorradeEditor("new")}
+                      >
+                        <i className="bi bi-plus-lg me-1" />
+                        Add Vorrade
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {vorradeError && !vorradeEditor && (
+                  <div className="alert alert-danger m-3 mb-0" role="alert">
+                    <i className="bi bi-exclamation-triangle-fill me-2" />
+                    {vorradeError}
+                  </div>
+                )}
+
+                <div className="table-responsive desktop-vorraden-table">
+                  <table className="table table-hover align-middle mb-0 vorraden-table">
+                    <thead className="table-light">
+                      <tr>
+                        <th
+                          aria-sort={
+                            vorradeSort === "title"
+                              ? vorradeSortDirection === "asc"
+                                ? "ascending"
+                                : "descending"
+                              : "none"
+                          }
+                        >
+                          <button
+                            className="sort-header-button"
+                            type="button"
+                            onClick={() => changeVorradeSort("title")}
+                          >
+                            Vorrade
+                            {vorradeSort === "title" && (
+                              <i
+                                className={`bi ${
+                                  vorradeSortDirection === "asc"
+                                    ? "bi-caret-up-fill"
+                                    : "bi-caret-down-fill"
+                                }`}
+                              />
+                            )}
+                          </button>
+                        </th>
+                        <th>Notes</th>
+                        <th
+                          className="text-center"
+                          aria-sort={
+                            vorradeSort === "timesUsed"
+                              ? vorradeSortDirection === "asc"
+                                ? "ascending"
+                                : "descending"
+                              : "none"
+                          }
+                        >
+                          <button
+                            className="sort-header-button justify-content-center"
+                            type="button"
+                            onClick={() => changeVorradeSort("timesUsed")}
+                          >
+                            Times Used
+                            {vorradeSort === "timesUsed" && (
+                              <i
+                                className={`bi ${
+                                  vorradeSortDirection === "asc"
+                                    ? "bi-caret-up-fill"
+                                    : "bi-caret-down-fill"
+                                }`}
+                              />
+                            )}
+                          </button>
+                        </th>
+                        <th
+                          aria-sort={
+                            vorradeSort === "lastUsed"
+                              ? vorradeSortDirection === "asc"
+                                ? "ascending"
+                                : "descending"
+                              : "none"
+                          }
+                        >
+                          <button
+                            className="sort-header-button"
+                            type="button"
+                            onClick={() => changeVorradeSort("lastUsed")}
+                          >
+                            Last Used
+                            {vorradeSort === "lastUsed" && (
+                              <i
+                                className={`bi ${
+                                  vorradeSortDirection === "asc"
+                                    ? "bi-caret-up-fill"
+                                    : "bi-caret-down-fill"
+                                }`}
+                              />
+                            )}
+                          </button>
+                        </th>
+                        <th className="text-center">Attachments</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleVorraden.map((record) => (
+                        <tr
+                          className="service-row"
+                          key={record.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openVorradeEditor(record)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            openVorradeEditor(record);
+                          }}
+                        >
+                          <td className="fw-semibold">{record.title}</td>
+                          <td className="note-cell">{firstLine(record.notes)}</td>
+                          <td className="text-center">{record.timesUsed}</td>
+                          <td>{record.lastUsed}</td>
+                          <td className="text-center">
+                            {record.attachmentCount ? (
+                              <span className="badge text-bg-light border">
+                                <i className="bi bi-paperclip me-1" />
+                                {record.attachmentCount}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="list-group list-group-flush mobile-vorrade-list">
+                  {visibleVorraden.map((record) => (
+                    <button
+                      type="button"
+                      className="list-group-item list-group-item-action text-start mobile-vorrade-row"
+                      key={record.id}
+                      onClick={() => openVorradeEditor(record)}
+                    >
+                      <strong className="d-block">{record.title}</strong>
+                      {record.notes && (
+                        <span className="mobile-vorrade-notes text-body-secondary">
+                          {record.notes}
+                        </span>
+                      )}
+                      <small className="d-block text-body-secondary mt-1">
+                        {vorradeUsageSummary(record)}
+                      </small>
+                    </button>
+                  ))}
+                </div>
+
+                {!visibleVorraden.length && (
+                  <div className="card-body text-center text-body-secondary py-5">
+                    <i className="bi bi-files fs-2 d-block mb-2" />
+                    No Vorraden Match Your Search.
                   </div>
                 )}
               </div>
@@ -4908,13 +5898,91 @@ export default function Home() {
                           <label className="form-label" htmlFor="edit-service-vorrade">
                             Vorrade
                           </label>
-                          <input
-                            className="form-control"
+                          <VorradeChoiceInput
                             id="edit-service-vorrade"
                             name="editVorrade"
-                            list="vorraden-list"
-                            defaultValue={selected.vorrade === "—" ? "" : selected.vorrade}
+                            value={editVorradeValue}
+                            choices={vorradeChoices}
+                            onChange={(value, selectedId) => {
+                              setEditVorradeValue(value);
+                              setEditVorradeSelectedId(selectedId);
+                              setEditCreateSeparateVorrade(false);
+                            }}
                           />
+                          {editVorradeDecision.changed && editVorradeValue.trim() && (
+                            <div
+                              className={`alert py-2 px-3 mt-2 mb-0 text-change-preview ${
+                                editVorradeDecision.action === "CREATE"
+                                  ? "alert-warning"
+                                  : editVorradeDecision.action === "RELINK"
+                                    ? "alert-info"
+                                    : "alert-primary"
+                              }`}
+                              role="status"
+                            >
+                              <i className="bi bi-info-circle-fill me-2" />
+                              {editVorradeDecision.action === "RELINK" &&
+                              editVorradeDecision.target
+                                ? `This Service Will Use Existing Vorrade “${editVorradeDecision.target.title}”.`
+                                : editVorradeDecision.action === "CREATE"
+                                  ? "A New Separate Vorrade Will Be Created For This Service."
+                                  : `This Will Rename “${selected.vorrade}” Everywhere — Used By ${
+                                      editVorradeDecision.source?.serviceCount || 1
+                                    } ${
+                                      Number(
+                                        editVorradeDecision.source?.serviceCount || 1,
+                                      ) === 1
+                                        ? "Service"
+                                        : "Services"
+                                    }.`}
+                            </div>
+                          )}
+                          {editVorradeDecision.showChoices && (
+                            <fieldset className="text-change-choices border rounded p-3 mt-2">
+                              <legend className="float-none w-auto px-1 mb-1 fs-6">
+                                How Should This New Name Be Used?
+                              </legend>
+                              <div className="form-check">
+                                <input
+                                  className="form-check-input"
+                                  id="edit-vorrade-rename"
+                                  name="editVorradeActionChoice"
+                                  type="radio"
+                                  checked={!editCreateSeparateVorrade}
+                                  onChange={() => setEditCreateSeparateVorrade(false)}
+                                />
+                                <label
+                                  className="form-check-label"
+                                  htmlFor="edit-vorrade-rename"
+                                >
+                                  <strong>Rename Current Vorrade</strong>
+                                  <span className="d-block text-body-secondary small">
+                                    Preserves Its Notes And Attachments And Changes The Name
+                                    Everywhere.
+                                  </span>
+                                </label>
+                              </div>
+                              <div className="form-check mt-2">
+                                <input
+                                  className="form-check-input"
+                                  id="edit-vorrade-create"
+                                  name="editVorradeActionChoice"
+                                  type="radio"
+                                  checked={editCreateSeparateVorrade}
+                                  onChange={() => setEditCreateSeparateVorrade(true)}
+                                />
+                                <label
+                                  className="form-check-label"
+                                  htmlFor="edit-vorrade-create"
+                                >
+                                  <strong>Create New Vorrade For This Service</strong>
+                                  <span className="d-block text-body-secondary small">
+                                    Keeps The Current Vorrade As A Separate Record.
+                                  </span>
+                                </label>
+                              </div>
+                            </fieldset>
+                          )}
                         </div>
                         <div className="col-md-6">
                           <label className="form-label" htmlFor="edit-progress-intent">
@@ -5701,8 +6769,11 @@ export default function Home() {
                         </div>
                       ) : (
                         <TextAttachmentManager
-                          textId={textEditor.id}
-                          textName={textEditor.text}
+                          ownerId={textEditor.id}
+                          ownerName={textEditor.text}
+                          ownerLabel="Text"
+                          ownerIdPayloadKey="textId"
+                          apiUrl={textAttachmentsApiUrl()}
                           attachments={textAttachments}
                           busy={attachmentBusy}
                           setBusy={setAttachmentBusy}
@@ -5871,6 +6942,308 @@ export default function Home() {
         </div>
       )}
 
+      {vorradeEditor && (
+        <div
+          className="modal fade show d-block service-edit-modal library-editor-modal"
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="vorrade-editor-title"
+        >
+          <div className="modal-dialog modal-fullscreen">
+            <div className="modal-content card card-primary card-outline mb-0">
+              <div className="modal-header">
+                <div>
+                  <small className="text-editor-eyebrow text-uppercase text-body-secondary">
+                    Reusable Vorrade Record
+                  </small>
+                  <h5 className="modal-title" id="vorrade-editor-title">
+                    {vorradeEditor === "new" ? "Add Vorrade" : "Edit Vorrade"}
+                  </h5>
+                  {vorradeEditor !== "new" && (
+                    <small className="text-editor-save-status text-body-secondary">
+                      {vorradeAutoSaveStatus || "Changes Save Automatically."}
+                    </small>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="btn-close"
+                  aria-label="Close Vorrade Editor"
+                  onClick={() => void closeVorradeEditor()}
+                />
+              </div>
+              <form
+                className="library-editor-form"
+                ref={vorradeFormRef}
+                key={vorradeEditor === "new" ? "new" : vorradeEditor.id}
+                onSubmit={saveVorrade}
+                onBlur={autoSaveVorrade}
+              >
+                <div className="modal-body">
+                  <div className="library-editor-content">
+                    {vorradeError && (
+                      <div className="alert alert-danger" role="alert">
+                        <i className="bi bi-exclamation-triangle-fill me-2" />
+                        {vorradeError}
+                      </div>
+                    )}
+                    <div className="row g-3">
+                      <div className="col-12">
+                        <label className="form-label" htmlFor="vorrade-title">
+                          Vorrade
+                        </label>
+                        <input
+                          className="form-control"
+                          id="vorrade-title"
+                          name="vorradeTitle"
+                          defaultValue={
+                            vorradeEditor === "new" ? "" : vorradeEditor.title
+                          }
+                          placeholder="Vorrade Title"
+                          required
+                        />
+                      </div>
+                      <div className="col-12">
+                        <label className="form-label" htmlFor="vorrade-notes">
+                          Notes
+                        </label>
+                        <textarea
+                          className="form-control"
+                          id="vorrade-notes"
+                          name="vorradeNotes"
+                          rows={7}
+                          defaultValue={
+                            vorradeEditor === "new" ? "" : vorradeEditor.notes
+                          }
+                          placeholder="Notes About This Vorrade"
+                        />
+                      </div>
+                      {vorradeEditor !== "new" && (
+                        <>
+                          <div className="col-12">
+                            <div className="card bg-body-tertiary border-0 mb-0">
+                              <div className="card-body d-flex flex-wrap gap-4 py-3">
+                                <span>
+                                  <strong>{vorradeEditor.timesUsed}</strong>
+                                  <span className="text-body-secondary ms-2">
+                                    Times Used
+                                  </span>
+                                </span>
+                                <span>
+                                  <strong>{vorradeEditor.lastUsed}</strong>
+                                  <span className="text-body-secondary ms-2">
+                                    Last Used
+                                  </span>
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="col-12">
+                            <div className="card border mb-0">
+                              <div className="card-header py-2">
+                                <h6 className="mb-0">
+                                  <i className="bi bi-calendar3 me-2" />
+                                  Usage History
+                                </h6>
+                              </div>
+                              <div className="list-group list-group-flush">
+                                {vorradeEditor.usageHistory.length ? (
+                                  vorradeEditor.usageHistory.map((entry) => (
+                                    <div
+                                      className="list-group-item d-flex flex-wrap align-items-center gap-2 py-2"
+                                      key={entry.id}
+                                    >
+                                      <time dateTime={entry.dateValue}>{entry.date}</time>
+                                      <span className="text-body-secondary" aria-hidden="true">
+                                        ·
+                                      </span>
+                                      <span>{entry.text}</span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div className="list-group-item text-body-secondary py-3">
+                                    This Vorrade Has Not Been Used Yet.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                      <div className="col-12">
+                        {vorradeEditor === "new" ? (
+                          <div className="card border mb-0">
+                            <div className="card-header">
+                              <h6 className="mb-0">
+                                <i className="bi bi-paperclip me-2" />
+                                Private Attachments
+                              </h6>
+                            </div>
+                            <div className="card-body text-body-secondary">
+                              Save The Vorrade Before Adding PDFs Or Photos.
+                            </div>
+                          </div>
+                        ) : (
+                          <TextAttachmentManager
+                            ownerId={vorradeEditor.id}
+                            ownerName={vorradeEditor.title}
+                            ownerLabel="Vorrade"
+                            ownerIdPayloadKey="vorradeId"
+                            apiUrl={vorradeAttachmentsApiUrl()}
+                            attachments={vorradeAttachments}
+                            busy={attachmentBusy}
+                            setBusy={setAttachmentBusy}
+                            onAttachmentsChange={setVorradeAttachments}
+                            onRefresh={async () => {
+                              await Promise.all([
+                                loadVorradeAttachments(vorradeEditor.id),
+                                refreshVorraden(),
+                              ]);
+                            }}
+                            onError={setVorradeError}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {(vorradeEditor === "new" || vorradeEditor.serviceCount === 0) && (
+                  <div className="modal-footer justify-content-between">
+                    {vorradeEditor === "new" ? (
+                      <>
+                        <small className="text-body-secondary">
+                          Save This New Vorrade Once To Start Automatic Saving.
+                        </small>
+                        <button className="btn btn-primary" type="submit">
+                          <i className="bi bi-check-lg me-1" />
+                          Save Vorrade
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        onClick={() => void deleteVorrade()}
+                      >
+                        <i className="bi bi-trash3 me-1" />
+                        Delete Vorrade
+                      </button>
+                    )}
+                  </div>
+                )}
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {vorradeMergeRequest && (
+        <div
+          className="modal fade show d-block text-merge-modal"
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="vorrade-merge-title"
+        >
+          <div className="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div className="modal-content card card-warning card-outline mb-0">
+              <div className="modal-header">
+                <div>
+                  <small className="text-uppercase text-body-secondary">
+                    Safe Vorrade Merge
+                  </small>
+                  <h5 className="modal-title" id="vorrade-merge-title">
+                    Merge Into “{vorradeMergeRequest.target.title}”?
+                  </h5>
+                </div>
+                <button
+                  className="btn-close"
+                  type="button"
+                  aria-label="Cancel Merge"
+                  onClick={cancelVorradeMerge}
+                />
+              </div>
+              <div className="modal-body">
+                <p>
+                  All Linked Services And Attachments Will Be Moved Into The Existing
+                  Vorrade. The Duplicate Record Will Then Be Removed.
+                </p>
+                {vorradeMergeRequest.notesConflict ? (
+                  <fieldset className="border rounded p-3">
+                    <legend className="float-none w-auto px-1 fs-6">
+                      Which Notes Should Be Kept?
+                    </legend>
+                    <div className="form-check mb-3">
+                      <input
+                        className="form-check-input"
+                        id="vorrade-merge-notes-source"
+                        type="radio"
+                        name="vorradeMergeNotes"
+                        checked={vorradeMergeNotesChoice === "SOURCE"}
+                        onChange={() => setVorradeMergeNotesChoice("SOURCE")}
+                      />
+                      <label
+                        className="form-check-label"
+                        htmlFor="vorrade-merge-notes-source"
+                      >
+                        <strong>{vorradeMergeRequest.source.title}</strong>
+                        <span className="d-block text-body-secondary small">
+                          {vorradeMergeRequest.payload.notes}
+                        </span>
+                      </label>
+                    </div>
+                    <div className="form-check">
+                      <input
+                        className="form-check-input"
+                        id="vorrade-merge-notes-target"
+                        type="radio"
+                        name="vorradeMergeNotes"
+                        checked={vorradeMergeNotesChoice === "TARGET"}
+                        onChange={() => setVorradeMergeNotesChoice("TARGET")}
+                      />
+                      <label
+                        className="form-check-label"
+                        htmlFor="vorrade-merge-notes-target"
+                      >
+                        <strong>{vorradeMergeRequest.target.title}</strong>
+                        <span className="d-block text-body-secondary small">
+                          {vorradeMergeRequest.target.notes}
+                        </span>
+                      </label>
+                    </div>
+                  </fieldset>
+                ) : (
+                  <div className="alert alert-light border mb-0">
+                    Notes Do Not Conflict. Existing Information Will Be Preserved.
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button
+                  className="btn btn-outline-secondary"
+                  type="button"
+                  onClick={cancelVorradeMerge}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-warning"
+                  type="button"
+                  disabled={
+                    vorradeMergeRequest.notesConflict && !vorradeMergeNotesChoice
+                  }
+                  onClick={() => void mergeVorraden()}
+                >
+                  <i className="bi bi-intersect me-1" />
+                  Merge Vorraden
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <datalist id="songs-list">
         {songChoices.map((song) => (
           <option key={song.id} value={song.title}>
@@ -5890,7 +7263,11 @@ export default function Home() {
           </option>
         ))}
       </datalist>
-      <datalist id="vorraden-list" />
+      <datalist id="vorraden-list">
+        {vorradeChoices.map((record) => (
+          <option key={record.id} value={record.title} />
+        ))}
+      </datalist>
     </div>
   );
 }
