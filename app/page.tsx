@@ -103,6 +103,22 @@ type Song = {
   timesUsed: number;
   lastUsedValue: string;
   lastUsed: string;
+  usageHistory: SongUsageEntry[];
+};
+
+type SongUsageEntry = {
+  id: string;
+  dateValue: string;
+  date: string;
+  type: "Lehr" | "Gebet";
+  text: string;
+};
+
+type ApiSongUsageEntry = {
+  id: string;
+  date: string;
+  type: "LEHR" | "GEBET";
+  text: string;
 };
 
 type ApiSong = {
@@ -112,6 +128,7 @@ type ApiSong = {
   notes: string | null;
   times_used: number;
   last_used: string | null;
+  usage_history: ApiSongUsageEntry[];
 };
 
 type Person = {
@@ -502,6 +519,17 @@ const songFromApi = (row: ApiSong): Song => ({
         year: "numeric",
       })
     : "Never",
+  usageHistory: (row.usage_history || []).map((entry) => ({
+    id: entry.id,
+    dateValue: entry.date,
+    date: new Date(`${entry.date}T12:00:00`).toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }),
+    type: entry.type === "LEHR" ? "Lehr" : "Gebet",
+    text: entry.text,
+  })),
 });
 
 const textFromApi = (row: ApiTextRecord): TextRecord => ({
@@ -3317,6 +3345,33 @@ export default function Home() {
     setSelected(service);
   }
 
+  async function openServiceFromUsageHistory(serviceId: string) {
+    const service = items.find((candidate) => candidate.id === serviceId);
+    if (!service) return;
+
+    if (songEditor) {
+      await closeSongEditor();
+      if (songAutoSaveFailed.current) return;
+    } else if (textEditor) {
+      if (attachmentBusy) {
+        setTextError("Please Wait For The Attachment To Finish Before Leaving.");
+        return;
+      }
+      await closeTextEditor();
+      if (textAutoSaveFailed.current) return;
+    } else if (vorradeEditor) {
+      if (attachmentBusy) {
+        setVorradeError("Please Wait For The Attachment To Finish Before Leaving.");
+        return;
+      }
+      await closeVorradeEditor();
+      if (vorradeAutoSaveFailed.current) return;
+    }
+
+    changeSection("Register");
+    openService(service);
+  }
+
   function startNew() {
     setActive("Register");
     setSaveNotice("");
@@ -3393,16 +3448,29 @@ export default function Home() {
           <button
             className="btn btn-link d-lg-none px-2"
             type="button"
-            aria-label="Open Navigation"
+            aria-label="Open Reports And Settings"
             onClick={() => setSidebarOpen(true)}
           >
             <i className="bi bi-list fs-4" />
           </button>
-          <span className="navbar-brand d-flex align-items-center mb-0">
-            <span className="brand-mark">
-              <i className="bi bi-book-half" aria-hidden="true" />
-            </span>
-            <span className="d-none d-sm-inline">Lehr Register</span>
+          <span
+            className="navbar-brand compact-page-title d-flex align-items-center mb-0 d-lg-none"
+            role="heading"
+            aria-level={1}
+          >
+            {active === "Register" ? "Lehr Register" : active}
+            {active === "Texts" && (
+              <span className="mobile-page-count">
+                <span aria-hidden="true"> · </span>
+                {visibleTexts.length}
+              </span>
+            )}
+            {active === "Vorraden" && (
+              <span className="mobile-page-count">
+                <span aria-hidden="true"> · </span>
+                {visibleVorraden.length}
+              </span>
+            )}
           </span>
           <div className="ms-auto d-flex align-items-center gap-2">
             <span
@@ -3423,13 +3491,24 @@ export default function Home() {
           <span className="brand-mark">
             <i className="bi bi-book-half" aria-hidden="true" />
           </span>
-          <span className="brand-text fw-semibold">Lehr Register</span>
+          <span className="brand-text fw-semibold d-lg-none">More</span>
+          <span className="brand-text fw-semibold d-none d-lg-inline">
+            Lehr Register
+          </span>
         </div>
         <div className="sidebar-wrapper">
           <nav className="mt-2" aria-label="Main Navigation">
             <ul className="nav sidebar-menu flex-column" role="menu">
               {navItems.map((item) => (
-                <li className="nav-item" role="none" key={item.label}>
+                <li
+                  className={`nav-item ${
+                    item.label === "Reports" || item.label === "Settings"
+                      ? ""
+                      : "d-none d-lg-block"
+                  }`}
+                  role="none"
+                  key={item.label}
+                >
                   <button
                     type="button"
                     role="menuitem"
@@ -3460,7 +3539,7 @@ export default function Home() {
               ))}
             </ul>
           </nav>
-          <div className="sidebar-status">
+          <div className="sidebar-status d-none d-lg-block">
             <i className="bi bi-shield-lock-fill me-2" />
             Private SQLite Register
           </div>
@@ -3480,21 +3559,9 @@ export default function Home() {
         <div className="app-content-header">
           <div className="container-fluid">
             <div className="row align-items-center">
-              <div className="col-sm-6">
+              <div className="col-12">
                 <h3 className="mb-0">
-                  {active === "Register" ? "Lehr Register" : active}
-                  {active === "Texts" && (
-                    <span className="mobile-page-count d-sm-none">
-                      <span aria-hidden="true"> · </span>
-                      {visibleTexts.length}
-                    </span>
-                  )}
-                  {active === "Vorraden" && (
-                    <span className="mobile-page-count d-sm-none">
-                      <span aria-hidden="true"> · </span>
-                      {visibleVorraden.length}
-                    </span>
-                  )}
+                  {active}
                 </h3>
                 <p className="text-body-secondary mb-0 mt-1">
                   {active === "Register"
@@ -3505,14 +3572,6 @@ export default function Home() {
                       ? "Backup And Application Information"
                       : `Reusable ${active} Records`}
                 </p>
-              </div>
-              <div className="col-sm-6 d-none d-sm-block">
-                <ol className="breadcrumb float-sm-end mb-0">
-                  <li className="breadcrumb-item">Lehr Register</li>
-                  <li className="breadcrumb-item active" aria-current="page">
-                    {active}
-                  </li>
-                </ol>
               </div>
             </div>
           </div>
@@ -6413,20 +6472,64 @@ export default function Home() {
                       />
                     </div>
                     {songEditor !== "new" && (
-                      <div className="col-12">
-                        <div className="card bg-body-tertiary border-0 mb-0">
-                          <div className="card-body d-flex flex-wrap gap-4 py-3">
-                            <span>
-                              <strong>{songEditor.timesUsed}</strong>
-                              <span className="text-body-secondary ms-2">Times Used</span>
-                            </span>
-                            <span>
-                              <strong>{songEditor.lastUsed}</strong>
-                              <span className="text-body-secondary ms-2">Last Used</span>
-                            </span>
+                      <>
+                        <div className="col-12">
+                          <div className="card bg-body-tertiary border-0 mb-0">
+                            <div className="card-body d-flex flex-wrap gap-4 py-3">
+                              <span>
+                                <strong>{songEditor.timesUsed}</strong>
+                                <span className="text-body-secondary ms-2">Times Used</span>
+                              </span>
+                              <span>
+                                <strong>{songEditor.lastUsed}</strong>
+                                <span className="text-body-secondary ms-2">Last Used</span>
+                              </span>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                        <div className="col-12">
+                          <div className="card border mb-0">
+                            <div className="card-header py-2">
+                              <h6 className="mb-0">
+                                <i className="bi bi-calendar3 me-2" />
+                                Usage History
+                              </h6>
+                            </div>
+                            <div className="list-group list-group-flush">
+                              {songEditor.usageHistory.length ? (
+                                songEditor.usageHistory.map((entry) => (
+                                  <button
+                                    className="list-group-item list-group-item-action d-flex flex-wrap align-items-center gap-2 py-2 text-start"
+                                    type="button"
+                                    key={entry.id}
+                                    onClick={() =>
+                                      void openServiceFromUsageHistory(entry.id)
+                                    }
+                                  >
+                                    <time
+                                      className="usage-history-date"
+                                      dateTime={entry.dateValue}
+                                    >
+                                      {entry.date}
+                                    </time>
+                                    <span className="badge text-bg-light border">
+                                      {entry.type}
+                                    </span>
+                                    <span className="text-body-secondary" aria-hidden="true">
+                                      ·
+                                    </span>
+                                    <span>{entry.text}</span>
+                                  </button>
+                                ))
+                              ) : (
+                                <div className="list-group-item text-body-secondary py-3">
+                                  This Song Has Not Been Used Yet.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </>
                     )}
                   </div>
                   </div>
@@ -6799,15 +6902,24 @@ export default function Home() {
                             <div className="list-group list-group-flush">
                               {textEditor.usageHistory.length ? (
                                 textEditor.usageHistory.map((entry) => (
-                                  <div
-                                    className="list-group-item d-flex align-items-center justify-content-between gap-3 py-2"
+                                  <button
+                                    className="list-group-item list-group-item-action d-flex align-items-center justify-content-between gap-3 py-2 text-start"
+                                    type="button"
                                     key={entry.id}
+                                    onClick={() =>
+                                      void openServiceFromUsageHistory(entry.id)
+                                    }
                                   >
-                                    <time dateTime={entry.dateValue}>{entry.date}</time>
+                                    <time
+                                      className="usage-history-date"
+                                      dateTime={entry.dateValue}
+                                    >
+                                      {entry.date}
+                                    </time>
                                     <span className="badge text-bg-light border">
                                       {entry.type}
                                     </span>
-                                  </div>
+                                  </button>
                                 ))
                               ) : (
                                 <div className="list-group-item text-body-secondary py-3">
@@ -7115,16 +7227,25 @@ export default function Home() {
                               <div className="list-group list-group-flush">
                                 {vorradeEditor.usageHistory.length ? (
                                   vorradeEditor.usageHistory.map((entry) => (
-                                    <div
-                                      className="list-group-item d-flex flex-wrap align-items-center gap-2 py-2"
+                                    <button
+                                      className="list-group-item list-group-item-action d-flex flex-wrap align-items-center gap-2 py-2 text-start"
+                                      type="button"
                                       key={entry.id}
+                                      onClick={() =>
+                                        void openServiceFromUsageHistory(entry.id)
+                                      }
                                     >
-                                      <time dateTime={entry.dateValue}>{entry.date}</time>
+                                      <time
+                                        className="usage-history-date"
+                                        dateTime={entry.dateValue}
+                                      >
+                                        {entry.date}
+                                      </time>
                                       <span className="text-body-secondary" aria-hidden="true">
                                         ·
                                       </span>
                                       <span>{entry.text}</span>
-                                    </div>
+                                    </button>
                                   ))
                                 ) : (
                                   <div className="list-group-item text-body-secondary py-3">

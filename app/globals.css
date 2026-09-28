@@ -19,6 +19,14 @@ button.nav-link {
   font-weight: 600;
 }
 
+.compact-page-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .brand-mark {
   display: inline-grid;
   width: 2rem;
@@ -984,6 +992,14 @@ button.nav-link {
   .app-footer {
     margin-left: 0 !important;
   }
+
+  .app-content-header {
+    display: none;
+  }
+
+  .app-content {
+    padding-top: 0.75rem;
+  }
 }
 
 @media (max-width: 767.98px) {
@@ -994,14 +1010,6 @@ button.nav-link {
 
   .backup-summary-row .border {
     padding: 0.75rem !important;
-  }
-
-  .app-content-header {
-    padding-bottom: 0.5rem;
-  }
-
-  .app-content-header p {
-    display: none;
   }
 
   .app-content {
@@ -1551,6 +1559,14 @@ button.nav-link {
   width: 100%;
   max-width: 1440px;
   margin-inline: auto;
+}
+
+.usage-history-date {
+  color: var(--bs-link-color);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
 }
 
 .tag-filter {

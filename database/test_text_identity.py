@@ -555,6 +555,56 @@ class TextIdentityApiTest(unittest.TestCase):
         self.assertFalse((self.data_path / "uploads" / storage_keys[0]).exists())
         self.assertFalse((self.data_path / "uploads" / storage_keys[1]).exists())
 
+    def test_song_usage_history_contains_exact_service_ids(self):
+        services = []
+        for date, service_type in (("2026-05-01", "LEHR"), ("2026-05-02", "GEBET")):
+            services.append(
+                self.request(
+                    "POST",
+                    "/services",
+                    {
+                        "date": date,
+                        "type": service_type,
+                        "song": "Usage History Song",
+                        "songBy": "",
+                        "text": "Song Usage Text",
+                        "textBy": "",
+                        "vorrade": "",
+                        "vorradeBy": "",
+                        "status": "IN_PROGRESS" if service_type == "LEHR" else "",
+                        "progressIntent": "START" if service_type == "LEHR" else "AUTO",
+                        "completed": False,
+                        "notes": "",
+                    },
+                    201,
+                )
+            )
+
+        song = next(
+            record
+            for record in self.request("GET", "/songs")
+            if record["title"] == "Usage History Song"
+        )
+        self.assertEqual(song["times_used"], 2)
+        self.assertEqual(song["last_used"], "2026-05-02")
+        self.assertEqual(
+            song["usage_history"],
+            [
+                {
+                    "id": services[1]["id"],
+                    "date": "2026-05-02",
+                    "type": "GEBET",
+                    "text": "Song Usage Text",
+                },
+                {
+                    "id": services[0]["id"],
+                    "date": "2026-05-01",
+                    "type": "LEHR",
+                    "text": "Song Usage Text",
+                },
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

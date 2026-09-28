@@ -679,17 +679,42 @@ def tag_records_by_text(con):
     return records
 
 
+def song_usage_history_by_song(con):
+    histories = {}
+    sql = """
+    SELECT services.song_id, services.id, services.service_date,
+           services.service_type, texts.text AS text_title
+      FROM services
+      JOIN texts ON texts.id = services.text_id
+     WHERE services.song_id IS NOT NULL
+  ORDER BY services.service_date DESC, services.created_at DESC, services.id DESC
+    """
+    for row in con.execute(sql):
+        histories.setdefault(row["song_id"], []).append(
+            {
+                "id": row["id"],
+                "date": row["service_date"],
+                "type": row["service_type"],
+                "text": row["text_title"],
+            }
+        )
+    return histories
+
+
 def song_rows(con):
     sql = """
-    SELECT songs.id, songs.title, songs.tags, songs.notes,
-           COUNT(services.id) AS times_used,
-           MAX(services.service_date) AS last_used
+    SELECT songs.id, songs.title, songs.tags, songs.notes
       FROM songs
- LEFT JOIN services ON services.song_id = songs.id
-  GROUP BY songs.id, songs.title, songs.tags, songs.notes
   ORDER BY songs.title COLLATE NOCASE
     """
-    return [dict(row) for row in con.execute(sql)]
+    history_by_song = song_usage_history_by_song(con)
+    rows = [dict(row) for row in con.execute(sql)]
+    for row in rows:
+        usage_history = history_by_song.get(row["id"], [])
+        row["usage_history"] = usage_history
+        row["times_used"] = len(usage_history)
+        row["last_used"] = usage_history[0]["date"] if usage_history else None
+    return rows
 
 
 def text_usage_history_by_text(con):
