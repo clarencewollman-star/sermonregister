@@ -280,6 +280,22 @@ button.nav-link {
   white-space: nowrap;
 }
 
+.text-year-group-row th {
+  padding: 0.45rem 0.75rem;
+  border-block: 1px solid var(--bs-border-color);
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-emphasis-color);
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+}
+
+.text-year-group-row small {
+  margin-left: 0.6rem;
+  color: var(--bs-secondary-color);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
 .text-heading-with-selection,
 .text-name-with-selection {
   display: flex;
@@ -1701,6 +1717,22 @@ button.nav-link {
 .mobile-text-list .badge {
   font-size: 0.72rem;
   font-weight: 500;
+}
+
+.mobile-text-year-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.75rem;
+  border-block: 1px solid var(--bs-border-color);
+  background: var(--bs-tertiary-bg);
+  color: var(--bs-emphasis-color);
+  font-size: 0.8rem;
+}
+
+.mobile-text-year-group span {
+  color: var(--bs-secondary-color);
+  font-size: 0.72rem;
 }
 
 .service-text-tags {

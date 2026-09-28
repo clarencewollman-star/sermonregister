@@ -3,6 +3,7 @@
 import {
   FocusEvent,
   FormEvent,
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -1709,6 +1710,24 @@ export default function Home() {
     },
     [texts, textSearch, textSort, textSortDirection, selectedTagIds],
   );
+
+  const visibleTextGroups = useMemo(() => {
+    if (!textSearch.beforeDate || textSearch.error) {
+      return [{ year: "", records: visibleTexts }];
+    }
+
+    const recordsByYear = new Map<string, TextRecord[]>();
+    for (const record of visibleTexts) {
+      const lastUsedYear = record.lastUsedValue.slice(0, 4);
+      const group = recordsByYear.get(lastUsedYear) || [];
+      group.push(record);
+      recordsByYear.set(lastUsedYear, group);
+    }
+
+    return [...recordsByYear.entries()]
+      .sort(([leftYear], [rightYear]) => rightYear.localeCompare(leftYear))
+      .map(([year, records]) => ({ year, records }));
+  }, [textSearch.beforeDate, textSearch.error, visibleTexts]);
 
   const visibleVorraden = useMemo(() => {
     const filtered = vorraden.filter((record) =>
@@ -4506,8 +4525,21 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {visibleTexts.map((record) => (
-                        <tr
+                      {visibleTextGroups.map((group) => (
+                        <Fragment key={group.year || "all-texts"}>
+                          {group.year && (
+                            <tr className="text-year-group-row">
+                              <th colSpan={8} scope="rowgroup">
+                                <span>{group.year}</span>
+                                <small>
+                                  {group.records.length}{" "}
+                                  {group.records.length === 1 ? "Text" : "Texts"}
+                                </small>
+                              </th>
+                            </tr>
+                          )}
+                          {group.records.map((record) => (
+                            <tr
                           className={`service-row ${
                             textSelectionMode && selectedTextIdSet.has(record.id)
                               ? "table-primary text-row-selected"
@@ -4597,21 +4629,37 @@ export default function Home() {
                               "—"
                             )}
                           </td>
-                        </tr>
+                            </tr>
+                          ))}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>
                 </div>
 
                 <div className="list-group list-group-flush mobile-text-list compact-mobile-texts">
-                  {visibleTexts.map((record) => {
-                    const alphabeticalTags = [...record.tagRecords].sort((left, right) =>
-                      left.name.localeCompare(right.name),
-                    );
-                    const visibleTags = alphabeticalTags.slice(0, 2);
-                    const hiddenTagCount = Math.max(0, alphabeticalTags.length - 2);
-                    const scripture = firstLine(record.scriptureReference);
-                    return (
+                  {visibleTextGroups.map((group) => (
+                    <Fragment key={group.year || "all-texts"}>
+                      {group.year && (
+                        <div className="mobile-text-year-group">
+                          <strong>{group.year}</strong>
+                          <span>
+                            {group.records.length}{" "}
+                            {group.records.length === 1 ? "Text" : "Texts"}
+                          </span>
+                        </div>
+                      )}
+                      {group.records.map((record) => {
+                        const alphabeticalTags = [...record.tagRecords].sort(
+                          (left, right) => left.name.localeCompare(right.name),
+                        );
+                        const visibleTags = alphabeticalTags.slice(0, 2);
+                        const hiddenTagCount = Math.max(
+                          0,
+                          alphabeticalTags.length - 2,
+                        );
+                        const scripture = firstLine(record.scriptureReference);
+                        return (
                       <div
                         role={textSelectionMode ? "checkbox" : "button"}
                         aria-checked={
@@ -4708,8 +4756,10 @@ export default function Home() {
                           {textUsageSummary(record)}
                         </small>
                       </div>
-                    );
-                  })}
+                        );
+                      })}
+                    </Fragment>
+                  ))}
                 </div>
 
                 {!visibleTexts.length && (
