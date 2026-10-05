@@ -780,7 +780,7 @@ function statusBadgeClass(status: string) {
   if (status === "Completed" || status === "Completed Lehr") {
     return "text-bg-success";
   }
-  if (status === "In Progress") return "text-bg-warning";
+  if (status === "In Progress") return "text-bg-info";
   if (status === "Started Lehr") return "text-bg-primary";
   if (status === "Continued") return "text-bg-info";
   return "text-bg-secondary";
