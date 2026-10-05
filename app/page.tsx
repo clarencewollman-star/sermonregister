@@ -443,7 +443,7 @@ const tagFromApi = (row: ApiTagRecord): TagRecord => ({
 
 const fromApi = (row: ApiService): Service => {
   const date = new Date(`${row.service_date}T12:00:00`);
-  const label = row.status_label;
+  const isProgressStart = row.progress_start_service_id === row.id;
   return {
     id: row.id,
     dateValue: row.service_date,
@@ -472,17 +472,11 @@ const fromApi = (row: ApiService): Service => {
     vorrade: row.vorrade || "",
     vorradeBy: row.vorrade_by || "",
     status:
-      label === "IN_PROGRESS"
+      isProgressStart && row.progress_status === "IN_PROGRESS"
         ? "In Progress"
-        : label === "FINISHED"
+        : isProgressStart && row.progress_status === "FINISHED"
           ? "Completed"
-          : label === "STARTED_LEHR"
-            ? "Started Lehr"
-            : label === "CONTINUED"
-              ? "Continued"
-              : label === "COMPLETED_LEHR"
-                ? "Completed Lehr"
-                : "",
+          : "",
     progressStatus:
       row.progress_status === "IN_PROGRESS"
         ? "In Progress"

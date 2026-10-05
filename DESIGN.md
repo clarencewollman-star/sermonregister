@@ -194,7 +194,7 @@ Behavior:
 - A Gebet automatically continues the newest in-progress Lehr with the same Text whose most recent activity falls within nine calendar months; if none exists, the Gebet automatically starts a Lehr.
 - A Lehr defaults to Start New Lehr. When a qualifying match exists, it may explicitly choose Continue Existing Lehr instead.
 - Same-day matching uses service entry order. Matching never selects blank or completed Lehr Progress.
-- A continuing service has one **Completed** checkbox. Earlier members display Continued; the one completing member displays Completed Lehr; a Gebet root displays Started Lehr.
+- A continuing service has one **Completed** checkbox. In the main Register, only the service that started a Lehr Progress displays its overall **In Progress** or **Completed** status. Continuation and completion services do not display separate progress labels in the Register.
 - Completing from the starting service editor uses the most recent continuation service as the completing service, or the starting service when no continuation exists. Reopening clears that marker but preserves history.
 - Deleting a service removes its progress membership. If the deleted service started a progression with later services, the earliest remaining service becomes the new start and the rest of the progression is preserved. Deleting the completing service reopens the progression.
 - Status filters show one starting row per In Progress or Completed Lehr. Blank historical status is excluded from both filters.
