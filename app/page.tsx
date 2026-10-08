@@ -15,6 +15,9 @@ import TextAttachmentManager, {
 } from "./components/TextAttachmentManager";
 import TextPrintReport from "./components/TextPrintReport";
 import RegisterPrintReport from "./components/RegisterPrintReport";
+import ServiceCalendar, {
+  type CalendarService,
+} from "./components/ServiceCalendar";
 
 declare const __APP_VERSION__: string;
 
@@ -336,6 +339,7 @@ type BackupJob = {
 };
 
 type EntryType = "" | "Lehr" | "Gebet";
+type RegisterView = "list" | "calendar";
 type ProgressMatch = {
   id: string;
   start_service_id: string;
@@ -370,6 +374,11 @@ const blankDraft = () => ({
   completed: false,
   notes: "",
 });
+
+const currentMonthKey = () => {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+};
 
 const apiUrl = () => "/api/services";
 const songsApiUrl = () => "/api/songs";
@@ -1305,6 +1314,11 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All Services");
   const [year, setYear] = useState("All Years");
+  const [registerView, setRegisterView] = useState<RegisterView>("list");
+  const [calendarMonth, setCalendarMonth] = useState(currentMonthKey);
+  const [calendarSelectedDate, setCalendarSelectedDate] = useState("");
+  const [calendarDayPanelDate, setCalendarDayPanelDate] = useState("");
+  const [calendarFilterOpen, setCalendarFilterOpen] = useState(false);
   const [open, setOpen] = useState(false);
   const [mobile, setMobile] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -1612,7 +1626,7 @@ export default function Home() {
       );
   }, []);
 
-  const visible = useMemo(
+  const filteredServices = useMemo(
     () =>
       items.filter(
         (service) =>
@@ -1625,7 +1639,6 @@ export default function Home() {
             (filter === "Completed Lehrs" &&
               service.progressStartId === service.id &&
               service.progressStatus === "Completed")) &&
-          (year === "All Years" || service.dateValue.startsWith(`${year}-`)) &&
           selectedTagIds.every((tagId) => service.textTagIds.includes(tagId)) &&
           `${Object.values(service).join(" ")} ${service.textTags
             .map((tag) => tag.name)
@@ -1633,8 +1646,62 @@ export default function Home() {
             .toLowerCase()
             .includes(query.toLowerCase()),
       ),
-    [items, query, filter, year, selectedTagIds],
+    [items, query, filter, selectedTagIds],
   );
+
+  const visible = useMemo(
+    () =>
+      filteredServices.filter(
+        (service) => year === "All Years" || service.dateValue.startsWith(`${year}-`),
+      ),
+    [filteredServices, year],
+  );
+
+  const calendarVisible = useMemo(
+    () =>
+      filteredServices.filter((service) =>
+        service.dateValue.startsWith(`${calendarMonth}-`),
+      ),
+    [calendarMonth, filteredServices],
+  );
+
+  const calendarBounds = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const serviceYears = items.map((service) => Number(service.dateValue.slice(0, 4)));
+    const earliestYear = serviceYears.length
+      ? Math.min(currentYear, ...serviceYears)
+      : currentYear;
+    const latestYear = serviceYears.length
+      ? Math.max(currentYear, ...serviceYears)
+      : currentYear;
+    return {
+      min: `${earliestYear}-01`,
+      max: `${latestYear}-12`,
+    };
+  }, [items]);
+
+  const calendarFilterCount =
+    Number(Boolean(query.trim())) +
+    Number(filter !== "All Services") +
+    selectedTagIds.length;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (
+        calendarSelectedDate &&
+        !calendarVisible.some((service) => service.dateValue === calendarSelectedDate)
+      ) {
+        setCalendarSelectedDate("");
+      }
+      if (
+        calendarDayPanelDate &&
+        !calendarVisible.some((service) => service.dateValue === calendarDayPanelDate)
+      ) {
+        setCalendarDayPanelDate("");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [calendarDayPanelDate, calendarSelectedDate, calendarVisible]);
 
   const backupRunning = Boolean(
     backupJob &&
@@ -2233,13 +2300,15 @@ export default function Home() {
     }
     setSaveError("");
     setSaveNotice("");
+    const savedDate = String(form.get("editDate"));
+    const dateChanged = savedDate !== selected.dateValue;
     try {
       const response = await fetch(apiUrl(), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: selected.id,
-          date: String(form.get("editDate")),
+          date: savedDate,
           type: editKind.toUpperCase(),
           song: String(form.get("editSong")),
           songBy: String(form.get("editSongBy")),
@@ -2296,6 +2365,18 @@ export default function Home() {
       }
       if (result.removed_old_text) {
         setSaveNotice((message) => `${message} — Empty Unused Text Removed`);
+      }
+      if (dateChanged) {
+        const movedDate = new Date(`${savedDate}T12:00:00`).toLocaleDateString("en-US", {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        });
+        setSaveNotice((message) =>
+          message === "Service Saved"
+            ? `Service Moved To ${movedDate}`
+            : `${message} — Moved To ${movedDate}`,
+        );
       }
       setSelected(null);
       void refreshSongs().catch(() => setSongError("The Songs Could Not Be Refreshed."));
@@ -3330,6 +3411,20 @@ export default function Home() {
     window.history.replaceState(null, "", url);
   }
 
+  function changeRegisterView(view: RegisterView) {
+    setRegisterView(view);
+    setCalendarFilterOpen(false);
+    if (view === "list") {
+      setCalendarDayPanelDate("");
+    }
+  }
+
+  function clearCalendarFilters() {
+    setQuery("");
+    setFilter("All Services");
+    setSelectedTagIds([]);
+  }
+
   function openService(service: Service) {
     setSaveError("");
     setSaveNotice("");
@@ -3356,6 +3451,11 @@ export default function Home() {
     setEditVorradeSelectedId(service.vorradeId);
     setEditCreateSeparateVorrade(false);
     setSelected(service);
+  }
+
+  function openCalendarService(calendarService: CalendarService) {
+    const service = items.find((candidate) => candidate.id === calendarService.id);
+    if (service) openService(service);
   }
 
   async function openServiceFromUsageHistory(serviceId: string) {
@@ -3632,64 +3732,8 @@ export default function Home() {
                         <option>Completed Lehrs</option>
                       </select>
                     </div>
-                    <div className="col-6 col-lg-auto">
-                      <select
-                        className="form-select"
-                        value={year}
-                        onChange={(event) => setYear(event.target.value)}
-                        aria-label="Year"
-                      >
-                        <option>All Years</option>
-                        {years.map((availableYear) => (
-                          <option key={availableYear}>{availableYear}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="col-auto ms-lg-auto">
-                      <span className="badge text-bg-primary rounded-pill">
-                        {visible.length} Services
-                      </span>
-                    </div>
-                  </div>
-                  <div className="mobile-register-toolbar d-md-none">
-                    <div className="d-flex gap-2">
-                      <div className="input-group flex-grow-1 min-width-0">
-                        <span className="input-group-text">
-                          <i className="bi bi-search" />
-                        </span>
-                        <input
-                          className="form-control"
-                          value={query}
-                          onChange={(event) => setQuery(event.target.value)}
-                          placeholder="Search Services"
-                          aria-label="Search Services"
-                        />
-                      </div>
-                      <button
-                        className="btn btn-primary flex-shrink-0"
-                        type="button"
-                        onClick={startNew}
-                      >
-                        <i className="bi bi-plus-lg me-1" />
-                        Add
-                      </button>
-                    </div>
-                    <div className="row g-2 mt-0">
-                      <div className="col-5">
-                        <select
-                          className="form-select"
-                          value={filter}
-                          onChange={(event) => setFilter(event.target.value)}
-                          aria-label="Service Type"
-                        >
-                          <option>All Services</option>
-                          <option>Lehr</option>
-                          <option>Gebet</option>
-                          <option>In Progress Lehrs</option>
-                          <option>Completed Lehrs</option>
-                        </select>
-                      </div>
-                      <div className="col-4">
+                    {registerView === "list" && (
+                      <div className="col-6 col-lg-auto">
                         <select
                           className="form-select"
                           value={year}
@@ -3702,15 +3746,236 @@ export default function Home() {
                           ))}
                         </select>
                       </div>
-                      <div className="col-3">
-                        <TagFilter
-                          tags={tags}
-                          selectedIds={selectedTagIds}
-                          onChange={setSelectedTagIds}
-                          mobile
-                        />
+                    )}
+                    <div className="col-auto">
+                      <div className="btn-group register-view-toggle" role="group" aria-label="Register View">
+                        <button
+                          className={`btn btn-outline-primary ${registerView === "list" ? "active" : ""}`}
+                          type="button"
+                          title="List View"
+                          aria-label="List View"
+                          aria-pressed={registerView === "list"}
+                          onClick={() => changeRegisterView("list")}
+                        >
+                          <i className="bi bi-table" />
+                        </button>
+                        <button
+                          className={`btn btn-outline-primary ${registerView === "calendar" ? "active" : ""}`}
+                          type="button"
+                          title="Calendar View"
+                          aria-label="Calendar View"
+                          aria-pressed={registerView === "calendar"}
+                          onClick={() => changeRegisterView("calendar")}
+                        >
+                          <i className="bi bi-calendar3" />
+                        </button>
                       </div>
                     </div>
+                    <div className="col-auto ms-lg-auto">
+                      <span className="badge text-bg-primary rounded-pill">
+                        {registerView === "calendar" ? calendarVisible.length : visible.length}{" "}
+                        {(registerView === "calendar" ? calendarVisible.length : visible.length) === 1
+                          ? "Service"
+                          : "Services"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mobile-register-toolbar d-md-none">
+                    {registerView === "list" ? (
+                      <>
+                        <div className="d-flex gap-2">
+                          <div className="input-group flex-grow-1 min-width-0">
+                            <span className="input-group-text">
+                              <i className="bi bi-search" />
+                            </span>
+                            <input
+                              className="form-control"
+                              value={query}
+                              onChange={(event) => setQuery(event.target.value)}
+                              placeholder="Search Services"
+                              aria-label="Search Services"
+                            />
+                          </div>
+                          <button
+                            className="btn btn-outline-primary flex-shrink-0"
+                            type="button"
+                            title="Calendar View"
+                            aria-label="Calendar View"
+                            onClick={() => changeRegisterView("calendar")}
+                          >
+                            <i className="bi bi-calendar3" />
+                          </button>
+                          <button
+                            className="btn btn-primary flex-shrink-0"
+                            type="button"
+                            onClick={startNew}
+                          >
+                            <i className="bi bi-plus-lg me-1" />
+                            Add
+                          </button>
+                        </div>
+                        <div className="row g-2 mt-0">
+                          <div className="col-5">
+                            <select
+                              className="form-select"
+                              value={filter}
+                              onChange={(event) => setFilter(event.target.value)}
+                              aria-label="Service Type"
+                            >
+                              <option>All Services</option>
+                              <option>Lehr</option>
+                              <option>Gebet</option>
+                              <option>In Progress Lehrs</option>
+                              <option>Completed Lehrs</option>
+                            </select>
+                          </div>
+                          <div className="col-4">
+                            <select
+                              className="form-select"
+                              value={year}
+                              onChange={(event) => setYear(event.target.value)}
+                              aria-label="Year"
+                            >
+                              <option>All Years</option>
+                              {years.map((availableYear) => (
+                                <option key={availableYear}>{availableYear}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="col-3">
+                            <TagFilter
+                              tags={tags}
+                              selectedIds={selectedTagIds}
+                              onChange={setSelectedTagIds}
+                              mobile
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="d-flex align-items-center justify-content-between gap-2">
+                          <div className="btn-group register-view-toggle" role="group" aria-label="Register View">
+                            <button
+                              className="btn btn-outline-primary"
+                              type="button"
+                              title="List View"
+                              aria-label="List View"
+                              aria-pressed="false"
+                              onClick={() => changeRegisterView("list")}
+                            >
+                              <i className="bi bi-table" />
+                            </button>
+                            <button
+                              className="btn btn-outline-primary active"
+                              type="button"
+                              title="Calendar View"
+                              aria-label="Calendar View"
+                              aria-pressed="true"
+                            >
+                              <i className="bi bi-calendar3" />
+                            </button>
+                          </div>
+                          <button
+                            className={`btn btn-outline-secondary calendar-filter-button ${
+                              calendarFilterOpen ? "active" : ""
+                            }`}
+                            type="button"
+                            aria-expanded={calendarFilterOpen}
+                            onClick={() => setCalendarFilterOpen((open) => !open)}
+                          >
+                            <i className="bi bi-funnel me-2" />
+                            Filters
+                            {calendarFilterCount > 0 && (
+                              <span className="badge text-bg-primary ms-2">
+                                {calendarFilterCount}
+                              </span>
+                            )}
+                          </button>
+                        </div>
+                        {calendarFilterOpen && (
+                          <div className="card mobile-calendar-filter-panel mt-2 mb-0">
+                            <div className="card-body p-2">
+                              <div className="input-group mb-2">
+                                <span className="input-group-text">
+                                  <i className="bi bi-search" />
+                                </span>
+                                <input
+                                  className="form-control"
+                                  value={query}
+                                  onChange={(event) => setQuery(event.target.value)}
+                                  placeholder="Search Services"
+                                  aria-label="Search Services"
+                                />
+                              </div>
+                              <div className="row g-2">
+                                <div className="col-7">
+                                  <select
+                                    className="form-select"
+                                    value={filter}
+                                    onChange={(event) => setFilter(event.target.value)}
+                                    aria-label="Service Type"
+                                  >
+                                    <option>All Services</option>
+                                    <option>Lehr</option>
+                                    <option>Gebet</option>
+                                    <option>In Progress Lehrs</option>
+                                    <option>Completed Lehrs</option>
+                                  </select>
+                                </div>
+                                <div className="col-5">
+                                  <TagFilter
+                                    tags={tags}
+                                    selectedIds={selectedTagIds}
+                                    onChange={setSelectedTagIds}
+                                    mobile
+                                  />
+                                </div>
+                              </div>
+                              <div className="d-flex justify-content-between gap-2 mt-2">
+                                <button
+                                  className="btn btn-link btn-sm px-0"
+                                  type="button"
+                                  disabled={!calendarFilterCount}
+                                  onClick={clearCalendarFilters}
+                                >
+                                  Clear All
+                                </button>
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  type="button"
+                                  onClick={() => setCalendarFilterOpen(false)}
+                                >
+                                  Done
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {calendarFilterCount > 0 && (
+                          <div className="calendar-active-filters mt-2">
+                            {query.trim() && (
+                              <button
+                                className="badge text-bg-light border"
+                                type="button"
+                                onClick={() => setQuery("")}
+                              >
+                                Search: {query.trim()} <i className="bi bi-x-lg ms-1" />
+                              </button>
+                            )}
+                            {filter !== "All Services" && (
+                              <button
+                                className="badge text-bg-light border"
+                                type="button"
+                                onClick={() => setFilter("All Services")}
+                              >
+                                {filter} <i className="bi bi-x-lg ms-1" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                   <SelectedTagChips
                     tags={tags}
@@ -3732,6 +3997,24 @@ export default function Home() {
                   </div>
                 )}
 
+                {registerView === "calendar" ? (
+                  <ServiceCalendar
+                    services={calendarVisible}
+                    month={calendarMonth}
+                    minMonth={calendarBounds.min}
+                    maxMonth={calendarBounds.max}
+                    selectedDate={calendarSelectedDate}
+                    dayPanelDate={calendarDayPanelDate}
+                    textDescriptionsByTitle={textDescriptionsByTitle}
+                    onMonthChange={setCalendarMonth}
+                    onSelectedDateChange={setCalendarSelectedDate}
+                    onDayPanelDateChange={setCalendarDayPanelDate}
+                    onOpenService={openCalendarService}
+                    onOpenText={openTextFromRegister}
+                    onOpenSong={openSongFromRegister}
+                  />
+                ) : (
+                  <>
                 <div className="table-responsive desktop-register-table">
                   <table className="table table-hover align-middle mb-0 register-table">
                     <thead className="table-light">
@@ -4165,6 +4448,8 @@ export default function Home() {
                     <i className="bi bi-inbox fs-2 d-block mb-2" />
                     No Services Match Your Search.
                   </div>
+                )}
+                  </>
                 )}
               </div>
             ) : active === "Texts" ? (
