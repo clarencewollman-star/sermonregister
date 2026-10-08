@@ -1645,7 +1645,12 @@ export default function Home() {
             .join(" ")}`
             .toLowerCase()
             .includes(query.toLowerCase()),
-      ),
+      ).sort((left, right) => {
+        const dateOrder = right.dateValue.localeCompare(left.dateValue);
+        if (dateOrder) return dateOrder;
+        if (left.type === right.type) return 0;
+        return left.type === "Lehr" ? -1 : 1;
+      }),
     [items, query, filter, selectedTagIds],
   );
 
