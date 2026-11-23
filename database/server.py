@@ -1914,7 +1914,8 @@ def start_backup_job():
             None,
         )
         if active:
-            raise ValueError("A Backup Is Already In Progress.")
+            # A refreshed or reopened Settings page can reconnect to the same job.
+            return public_backup_job(active)
         job_id = str(uuid.uuid4())
         timestamp = local_now().strftime("%Y-%m-%d-%H%M")
         file_name = f"lehr-register-backup-{timestamp}-v{APP_VERSION}.zip"

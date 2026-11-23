@@ -252,7 +252,7 @@ export default function RegisterPrintReport({
     <div className="register-report-preview">
       <header className="register-report-toolbar shadow-sm">
         <button className="btn btn-outline-secondary" type="button" onClick={onBack}>
-          <i className="bi bi-arrow-left me-1" />
+          <i aria-hidden="true" className="bi bi-arrow-left me-1" />
           Back To Reports
         </button>
         <label className="register-report-year-control">
@@ -278,7 +278,7 @@ export default function RegisterPrintReport({
           <span>Include Gebets</span>
         </label>
         <button className="btn btn-primary" type="button" onClick={() => window.print()}>
-          <i className="bi bi-printer me-1" />
+          <i aria-hidden="true" className="bi bi-printer me-1" />
           Print
         </button>
       </header>

@@ -387,7 +387,7 @@ function PhotoReview({
             >
               <img src={draft.sourceUrl} alt="" />
               <span>{index + 1}</span>
-              {draft.error && <i className="bi bi-exclamation-circle-fill text-danger" />}
+              {draft.error && <i aria-hidden="true" className="bi bi-exclamation-circle-fill text-danger" />}
             </button>
           ))}
         </div>
@@ -423,7 +423,7 @@ function PhotoReview({
             {active.error && <div className="text-danger small mt-2">{active.error}</div>}
           </div>
           <button className="btn btn-outline-primary" type="button" onClick={() => void rotateActive()}>
-            <i className="bi bi-arrow-clockwise me-1" />Rotate
+            <i aria-hidden="true" className="bi bi-arrow-clockwise me-1" />Rotate
           </button>
           <button
             className="btn btn-outline-secondary"
@@ -553,7 +553,7 @@ function AttachmentViewer({
     <div className="attachment-viewer" role="dialog" aria-modal="true" aria-label={attachment.display_name}>
       <header className="attachment-viewer-toolbar">
         <button className="btn btn-outline-light" type="button" onClick={saveAndClose}>
-          <i className="bi bi-arrow-left me-1" />Back To {ownerLabel}
+          <i aria-hidden="true" className="bi bi-arrow-left me-1" />Back To {ownerLabel}
         </button>
         <div className="attachment-viewer-title">
           <strong>{attachment.display_name}</strong>
@@ -563,11 +563,11 @@ function AttachmentViewer({
           {attachment.mime_type === "application/pdf" && (
             <>
               <button className="btn btn-outline-light" type="button" onClick={() => setScale((value) => Math.max(0.6, value - 0.2))} aria-label="Zoom Out">
-                <i className="bi bi-zoom-out" />
+                <i aria-hidden="true" className="bi bi-zoom-out" />
               </button>
               <button className="btn btn-outline-light" type="button" onClick={() => setScale(1)}>Fit Width</button>
               <button className="btn btn-outline-light" type="button" onClick={() => setScale((value) => Math.min(2.4, value + 0.2))} aria-label="Zoom In">
-                <i className="bi bi-zoom-in" />
+                <i aria-hidden="true" className="bi bi-zoom-in" />
               </button>
             </>
           )}
@@ -606,7 +606,7 @@ function AttachmentViewer({
       </div>
       <footer className="attachment-viewer-footer">
         <button className="btn btn-outline-light" type="button" disabled={index === 0} onClick={() => void move(index - 1)}>
-          <i className="bi bi-chevron-left me-1" />Previous Attachment
+          <i aria-hidden="true" className="bi bi-chevron-left me-1" />Previous Attachment
         </button>
         <span>
           {attachment.mime_type === "application/pdf" &&
@@ -617,7 +617,7 @@ function AttachmentViewer({
               : "Photo"}
         </span>
         <button className="btn btn-outline-light" type="button" disabled={index === attachments.length - 1} onClick={() => void move(index + 1)}>
-          Next Attachment<i className="bi bi-chevron-right ms-1" />
+          Next Attachment<i aria-hidden="true" className="bi bi-chevron-right ms-1" />
         </button>
       </footer>
     </div>
@@ -837,15 +837,15 @@ export default function TextAttachmentManager({
           </div>
           <div className="d-flex flex-wrap gap-2">
             <label className={`btn btn-outline-primary btn-sm mb-0 ${busy ? "disabled" : ""}`}>
-              <i className="bi bi-file-earmark-pdf me-1" />Add PDFs
+              <i aria-hidden="true" className="bi bi-file-earmark-pdf me-1" />Add PDFs
               <input className="visually-hidden" type="file" accept="application/pdf,.pdf" multiple disabled={busy} onChange={uploadPdfFiles} />
             </label>
             <label className={`btn btn-primary btn-sm mb-0 ${busy ? "disabled" : ""}`}>
-              <i className="bi bi-camera me-1" />Take Photo
+              <i aria-hidden="true" className="bi bi-camera me-1" />Take Photo
               <input className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" capture="environment" multiple disabled={busy} onChange={choosePhotos} />
             </label>
             <label className={`btn btn-outline-primary btn-sm mb-0 ${busy ? "disabled" : ""}`}>
-              <i className="bi bi-images me-1" />Choose Photos
+              <i aria-hidden="true" className="bi bi-images me-1" />Choose Photos
               <input className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple disabled={busy} onChange={choosePhotos} />
             </label>
           </div>
@@ -873,8 +873,8 @@ export default function TextAttachmentManager({
                 {attachment.mime_type !== "application/pdf" && (
                   <button className="btn btn-sm btn-outline-secondary" type="button" onClick={() => void editPhoto(attachment)}>Crop / Rotate</button>
                 )}
-                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={index === 0} onClick={() => void reorder(attachment, -1)} aria-label="Move Up"><i className="bi bi-arrow-up" /></button>
-                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={index === attachments.length - 1} onClick={() => void reorder(attachment, 1)} aria-label="Move Down"><i className="bi bi-arrow-down" /></button>
+                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={index === 0} onClick={() => void reorder(attachment, -1)} aria-label="Move Up"><i aria-hidden="true" className="bi bi-arrow-up" /></button>
+                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={index === attachments.length - 1} onClick={() => void reorder(attachment, 1)} aria-label="Move Down"><i aria-hidden="true" className="bi bi-arrow-down" /></button>
                 <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => void remove(attachment)}>Remove</button>
               </div>
             </div>

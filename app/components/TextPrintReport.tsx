@@ -235,7 +235,7 @@ export default function TextPrintReport({
     <div className="text-report-preview">
       <header className="text-report-preview-toolbar shadow-sm">
         <button className="btn btn-outline-secondary" type="button" onClick={onBack}>
-          <i className="bi bi-arrow-left me-1" />
+          <i aria-hidden="true" className="bi bi-arrow-left me-1" />
           Back To Texts
         </button>
         <label className="text-report-title-control">
@@ -248,7 +248,7 @@ export default function TextPrintReport({
           />
         </label>
         <button className="btn btn-primary" type="button" onClick={() => window.print()}>
-          <i className="bi bi-printer me-1" />
+          <i aria-hidden="true" className="bi bi-printer me-1" />
           Print
         </button>
       </header>

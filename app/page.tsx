@@ -18,6 +18,8 @@ import RegisterPrintReport from "./components/RegisterPrintReport";
 import ServiceCalendar, {
   type CalendarService,
 } from "./components/ServiceCalendar";
+import BibleReader, { TextBibleDialog } from "./components/BibleReader";
+import { findBiblePassage, type BiblePassage } from "./bible/luther1912";
 
 declare const __APP_VERSION__: string;
 
@@ -356,6 +358,7 @@ const navItems = [
   { label: "Texts", icon: "bi-journal-text" },
   { label: "Vorraden", icon: "bi-files" },
   { label: "Songs", icon: "bi-music-note-list" },
+  { label: "Bible", icon: "bi-book" },
   { label: "Reports", icon: "bi-printer" },
   { label: "Settings", icon: "bi-gear" },
 ];
@@ -914,7 +917,7 @@ function TagPicker({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={addTypedTag}
               >
-                <i className="bi bi-plus-lg me-2" />
+                <i aria-hidden="true" className="bi bi-plus-lg me-2" />
                 Add “{titleCaseTag(value)}”
               </button>
             )}
@@ -1180,7 +1183,7 @@ function TagFilter({
         aria-expanded={open}
         onClick={() => (open ? setOpen(false) : openFilter())}
       >
-        <i className="bi bi-tags me-1" />
+        <i aria-hidden="true" className="bi bi-tags me-1" />
         Tags{selectedIds.length ? ` (${selectedIds.length})` : ""}
       </button>
       {open && (
@@ -1293,7 +1296,7 @@ function SelectedTagChips({
             key={id}
             onClick={() => onChange(selectedIds.filter((tagId) => tagId !== id))}
           >
-            {tag.name} <i className="bi bi-x-lg ms-1" />
+            {tag.name} <i aria-hidden="true" className="bi bi-x-lg ms-1" />
           </button>
         ) : null;
       })}
@@ -1310,6 +1313,7 @@ function SelectedTagChips({
 
 export default function Home() {
   const [active, setActive] = useState("Register");
+  const [textBibleRequest, setTextBibleRequest] = useState<{ passage: BiblePassage | null } | null>(null);
   const [items, setItems] = useState<Service[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All Services");
@@ -1381,6 +1385,7 @@ export default function Home() {
   const textAutoSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const textAutoSaveFailed = useRef(false);
   const textFormRef = useRef<HTMLFormElement>(null);
+  const openBibleButtonRef = useRef<HTMLButtonElement>(null);
   const [textMergeRequest, setTextMergeRequest] = useState<TextMergeRequest | null>(null);
   const [textMergeChoices, setTextMergeChoices] = useState<
     Partial<Record<TextMergeField, "SOURCE" | "TARGET">>
@@ -3508,8 +3513,25 @@ export default function Home() {
     }
   }
 
+  function openBibleFromText() {
+    if (!textFormRef.current) return;
+    const form = new FormData(textFormRef.current);
+    const passage = findBiblePassage(
+      String(form.get("textScriptureReference") || ""),
+      String(form.get("textText") || ""),
+    );
+    setTextBibleRequest({ passage });
+  }
+
+  function returnFromBible() {
+    setTextBibleRequest(null);
+    window.requestAnimationFrame(() => {
+      openBibleButtonRef.current?.focus({ preventScroll: true });
+    });
+  }
+
   useEffect(() => {
-    if (!songEditor && !textEditor && !vorradeEditor) return;
+    if (textBibleRequest || (!songEditor && !textEditor && !vorradeEditor)) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -3528,6 +3550,7 @@ export default function Home() {
     closeTextEditor,
     closeVorradeEditor,
     songEditor,
+    textBibleRequest,
     textEditor,
     vorradeEditor,
   ]);
@@ -3566,10 +3589,10 @@ export default function Home() {
           <button
             className="btn btn-link d-lg-none px-2"
             type="button"
-            aria-label="Open Reports And Settings"
+            aria-label="Open More Menu"
             onClick={() => setSidebarOpen(true)}
           >
-            <i className="bi bi-list fs-4" />
+            <i aria-hidden="true" className="bi bi-list fs-4" />
           </button>
           <span
             className="navbar-brand compact-page-title d-flex align-items-center mb-0 d-lg-none"
@@ -3615,26 +3638,24 @@ export default function Home() {
           </span>
         </div>
         <div className="sidebar-wrapper">
-          <nav className="mt-2" aria-label="Main Navigation">
-            <ul className="nav sidebar-menu flex-column" role="menu">
+          <nav className="mt-2" aria-label={mobile ? "More Navigation" : "Main Navigation"}>
+            <ul className="nav sidebar-menu flex-column">
               {navItems.map((item) => (
                 <li
                   className={`nav-item ${
                     item.label === "Reports" || item.label === "Settings"
                       ? ""
-                      : "d-none d-lg-block"
+                      : "d-none d-md-block"
                   }`}
-                  role="none"
                   key={item.label}
                 >
                   <button
                     type="button"
-                    role="menuitem"
                     className={`nav-link ${active === item.label ? "active" : ""}`}
                     aria-current={active === item.label ? "page" : undefined}
                     onClick={() => changeSection(item.label)}
                   >
-                    <i className={`nav-icon bi ${item.icon}`} />
+                    <i aria-hidden="true" className={`nav-icon bi ${item.icon}`} />
                     <p>
                       {item.label}
                       {item.label === "Settings" &&
@@ -3688,7 +3709,9 @@ export default function Home() {
                       ? "Printable Register Reports"
                     : active === "Settings"
                       ? "Backup And Application Information"
-                      : `Reusable ${active} Records`}
+                      : active === "Bible"
+                        ? "Luther Bible 1912"
+                        : `Reusable ${active} Records`}
                 </p>
               </div>
             </div>
@@ -3762,7 +3785,7 @@ export default function Home() {
                           aria-pressed={registerView === "list"}
                           onClick={() => changeRegisterView("list")}
                         >
-                          <i className="bi bi-table" />
+                          <i aria-hidden="true" className="bi bi-table" />
                         </button>
                         <button
                           className={`btn btn-outline-primary ${registerView === "calendar" ? "active" : ""}`}
@@ -3772,7 +3795,7 @@ export default function Home() {
                           aria-pressed={registerView === "calendar"}
                           onClick={() => changeRegisterView("calendar")}
                         >
-                          <i className="bi bi-calendar3" />
+                          <i aria-hidden="true" className="bi bi-calendar3" />
                         </button>
                       </div>
                     </div>
@@ -3808,14 +3831,14 @@ export default function Home() {
                             aria-label="Calendar View"
                             onClick={() => changeRegisterView("calendar")}
                           >
-                            <i className="bi bi-calendar3" />
+                            <i aria-hidden="true" className="bi bi-calendar3" />
                           </button>
                           <button
                             className="btn btn-primary flex-shrink-0"
                             type="button"
                             onClick={startNew}
                           >
-                            <i className="bi bi-plus-lg me-1" />
+                            <i aria-hidden="true" className="bi bi-plus-lg me-1" />
                             Add
                           </button>
                         </div>
@@ -3869,7 +3892,7 @@ export default function Home() {
                               aria-pressed="false"
                               onClick={() => changeRegisterView("list")}
                             >
-                              <i className="bi bi-table" />
+                              <i aria-hidden="true" className="bi bi-table" />
                             </button>
                             <button
                               className="btn btn-outline-primary active"
@@ -3877,8 +3900,9 @@ export default function Home() {
                               title="Calendar View"
                               aria-label="Calendar View"
                               aria-pressed="true"
+                              onClick={() => changeRegisterView("calendar")}
                             >
-                              <i className="bi bi-calendar3" />
+                              <i aria-hidden="true" className="bi bi-calendar3" />
                             </button>
                           </div>
                           <button
@@ -3889,7 +3913,7 @@ export default function Home() {
                             aria-expanded={calendarFilterOpen}
                             onClick={() => setCalendarFilterOpen((open) => !open)}
                           >
-                            <i className="bi bi-funnel me-2" />
+                            <i aria-hidden="true" className="bi bi-funnel me-2" />
                             Filters
                             {calendarFilterCount > 0 && (
                               <span className="badge text-bg-primary ms-2">
@@ -3965,7 +3989,7 @@ export default function Home() {
                                 type="button"
                                 onClick={() => setQuery("")}
                               >
-                                Search: {query.trim()} <i className="bi bi-x-lg ms-1" />
+                                Search: {query.trim()} <i aria-hidden="true" className="bi bi-x-lg ms-1" />
                               </button>
                             )}
                             {filter !== "All Services" && (
@@ -3974,7 +3998,7 @@ export default function Home() {
                                 type="button"
                                 onClick={() => setFilter("All Services")}
                               >
-                                {filter} <i className="bi bi-x-lg ms-1" />
+                                {filter} <i aria-hidden="true" className="bi bi-x-lg ms-1" />
                               </button>
                             )}
                           </div>
@@ -4267,10 +4291,11 @@ export default function Home() {
                           role="button"
                           tabIndex={0}
                           onClick={() => openService(service)}
-                          onKeyDown={(event) =>
-                            (event.key === "Enter" || event.key === " ") &&
-                            openService(service)
-                          }
+                          onKeyDown={(event) => {
+                            if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+                            event.preventDefault();
+                            openService(service);
+                          }}
                         >
                           <td className="service-date date-column">
                             <strong>{service.date}</strong>
@@ -4372,10 +4397,11 @@ export default function Home() {
                       role="button"
                       tabIndex={0}
                       onClick={() => openService(service)}
-                      onKeyDown={(event) =>
-                        (event.key === "Enter" || event.key === " ") &&
-                        openService(service)
-                      }
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+                        event.preventDefault();
+                        openService(service);
+                      }}
                     >
                       <div className="mobile-service-heading">
                         <span className="mobile-service-date">
@@ -4507,7 +4533,7 @@ export default function Home() {
                           else setTextSelectionMode(true);
                         }}
                       >
-                        <i className={`bi ${textSelectionMode ? "bi-x-lg" : "bi-check2-square"} me-1`} />
+                        <i aria-hidden="true" className={`bi ${textSelectionMode ? "bi-x-lg" : "bi-check2-square"} me-1`} />
                         {textSelectionMode ? "Exit Selection" : "Select"}
                       </button>
                     </div>
@@ -4525,7 +4551,7 @@ export default function Home() {
                           setTextEditor("new");
                         }}
                       >
-                        <i className="bi bi-plus-lg me-1" />
+                        <i aria-hidden="true" className="bi bi-plus-lg me-1" />
                         Add Text
                       </button>
                     </div>
@@ -4591,7 +4617,7 @@ export default function Home() {
                           else setTextSelectionMode(true);
                         }}
                       >
-                        <i className={`bi ${textSelectionMode ? "bi-x-lg" : "bi-check2-square"}`} />
+                        <i aria-hidden="true" className={`bi ${textSelectionMode ? "bi-x-lg" : "bi-check2-square"}`} />
                         <span className="visually-hidden">
                           {textSelectionMode ? "Exit Selection" : "Select Texts"}
                         </span>
@@ -4609,7 +4635,7 @@ export default function Home() {
                           setTextEditor("new");
                         }}
                       >
-                        <i className="bi bi-plus-lg me-1" />
+                        <i aria-hidden="true" className="bi bi-plus-lg me-1" />
                         Add
                       </button>
                       )}
@@ -4666,7 +4692,7 @@ export default function Home() {
                         disabled={!selectedTextIds.length}
                         onClick={openTextReport}
                       >
-                        <i className="bi bi-file-earmark-text me-1" />
+                        <i aria-hidden="true" className="bi bi-file-earmark-text me-1" />
                         Preview Report
                       </button>
                     </div>
@@ -4712,7 +4738,7 @@ export default function Home() {
                             >
                               Text
                               {textSort === "text" && (
-                                <i
+                                <i aria-hidden="true"
                                   className={`bi ${
                                     textSortDirection === "asc"
                                       ? "bi-caret-up-fill"
@@ -4741,7 +4767,7 @@ export default function Home() {
                           >
                             Tags
                             {textSort === "tags" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   textSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -4768,7 +4794,7 @@ export default function Home() {
                           >
                             Times Used
                             {textSort === "timesUsed" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   textSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -4794,7 +4820,7 @@ export default function Home() {
                           >
                             Last Used
                             {textSort === "lastUsed" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   textSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -4843,7 +4869,7 @@ export default function Home() {
                               : openTextEditor(record)
                           }
                           onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return;
+                            if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
                             event.preventDefault();
                             if (textSelectionMode) toggleTextSelection(record.id);
                             else openTextEditor(record);
@@ -4966,7 +4992,7 @@ export default function Home() {
                             : openTextEditor(record)
                         }
                         onKeyDown={(event) => {
-                          if (event.key !== "Enter" && event.key !== " ") return;
+                          if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
                           event.preventDefault();
                           if (textSelectionMode) toggleTextSelection(record.id);
                           else openTextEditor(record);
@@ -5104,7 +5130,7 @@ export default function Home() {
                             : "Sort Ascending"
                         }
                       >
-                        <i
+                        <i aria-hidden="true"
                           className={`bi ${
                             vorradeSortDirection === "asc"
                               ? "bi-sort-up"
@@ -5124,7 +5150,7 @@ export default function Home() {
                         type="button"
                         onClick={() => openVorradeEditor("new")}
                       >
-                        <i className="bi bi-plus-lg me-1" />
+                        <i aria-hidden="true" className="bi bi-plus-lg me-1" />
                         Add Vorrade
                       </button>
                     </div>
@@ -5158,7 +5184,7 @@ export default function Home() {
                           >
                             Vorrade
                             {vorradeSort === "title" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   vorradeSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -5186,7 +5212,7 @@ export default function Home() {
                           >
                             Times Used
                             {vorradeSort === "timesUsed" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   vorradeSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -5212,7 +5238,7 @@ export default function Home() {
                           >
                             Last Used
                             {vorradeSort === "lastUsed" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   vorradeSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -5336,7 +5362,7 @@ export default function Home() {
                             : "Sort Ascending"
                         }
                       >
-                        <i
+                        <i aria-hidden="true"
                           className={`bi ${
                             songSortDirection === "asc"
                               ? "bi-sort-up"
@@ -5356,7 +5382,7 @@ export default function Home() {
                         type="button"
                         onClick={() => openSongEditor("new")}
                       >
-                        <i className="bi bi-plus-lg me-1" />
+                        <i aria-hidden="true" className="bi bi-plus-lg me-1" />
                         Add Song
                       </button>
                     </div>
@@ -5390,7 +5416,7 @@ export default function Home() {
                           >
                             Title
                             {songSort === "title" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   songSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -5416,7 +5442,7 @@ export default function Home() {
                           >
                             Tags
                             {songSort === "tags" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   songSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -5443,7 +5469,7 @@ export default function Home() {
                           >
                             Times Used
                             {songSort === "timesUsed" && (
-                              <i
+                              <i aria-hidden="true"
                                 className={`bi ${
                                   songSortDirection === "asc"
                                     ? "bi-caret-up-fill"
@@ -5534,6 +5560,8 @@ export default function Home() {
                   </div>
                 )}
               </div>
+            ) : active === "Bible" ? (
+              <BibleReader />
             ) : active === "Reports" ? (
               <div className="card card-primary card-outline shadow-sm reports-card">
                 <div className="card-header border-bottom">
@@ -5587,7 +5615,7 @@ export default function Home() {
                               }
                               onClick={openRegisterReport}
                             >
-                              <i className="bi bi-file-earmark-text me-2" />
+                              <i aria-hidden="true" className="bi bi-file-earmark-text me-2" />
                               Preview Register
                             </button>
                           </div>
@@ -5723,7 +5751,7 @@ export default function Home() {
                         disabled={backupRunning}
                         onClick={() => void startBackup()}
                       >
-                        <i className="bi bi-database-down me-2" />
+                        <i aria-hidden="true" className="bi bi-database-down me-2" />
                         Create And Download Backup
                       </button>
                     </div>
@@ -5893,15 +5921,16 @@ export default function Home() {
           <strong>Lehr Register</strong> · Private SQLite Storage
       </footer>
 
-      <nav className="mobile-tabbar nav nav-pills nav-fill border-top shadow-lg">
-        {navItems.slice(0, 4).map((item) => (
+      <nav className="mobile-tabbar nav nav-pills nav-fill border-top shadow-lg" aria-label="Main Navigation">
+        {navItems.filter((item) => item.label !== "Reports" && item.label !== "Settings").map((item) => (
           <button
             type="button"
             key={item.label}
             className={`nav-link ${active === item.label ? "active" : ""}`}
+            aria-current={active === item.label ? "page" : undefined}
             onClick={() => changeSection(item.label)}
           >
-            <i className={`bi ${item.icon}`} />
+            <i aria-hidden="true" className={`bi ${item.icon}`} />
             <span>{item.label}</span>
           </button>
         ))}
@@ -6154,7 +6183,7 @@ export default function Home() {
                     Cancel
                   </button>
                   <button className="btn btn-primary" type="submit">
-                    <i className="bi bi-check-lg me-1" />
+                    <i aria-hidden="true" className="bi bi-check-lg me-1" />
                     Save Service
                   </button>
                 </div>
@@ -6676,23 +6705,6 @@ export default function Home() {
                       </div>
                     )}
 
-                  <div className="card bg-body-tertiary border-0 mt-4 mb-0">
-                    <div className="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
-                      <div>
-                        <h6 className="mb-1">
-                          <i className="bi bi-file-earmark-pdf me-2" />
-                          PDF Attachments
-                        </h6>
-                        <small className="text-body-secondary">
-                          Documents For This Service Stay Private.
-                        </small>
-                      </div>
-                      <button className="btn btn-outline-primary btn-sm" type="button">
-                        <i className="bi bi-plus-lg me-1" />
-                        Add PDF
-                      </button>
-                    </div>
-                  </div>
                 </div>
                 <div className="modal-footer justify-content-between">
                   <button
@@ -6700,7 +6712,7 @@ export default function Home() {
                     className="btn btn-danger"
                     onClick={deleteSelectedService}
                   >
-                    <i className="bi bi-trash3 me-1" />
+                    <i aria-hidden="true" className="bi bi-trash3 me-1" />
                     Delete Service
                   </button>
                   <div className="d-flex flex-wrap align-items-center gap-2">
@@ -6712,7 +6724,7 @@ export default function Home() {
                       Cancel
                     </button>
                     <button className="btn btn-primary" type="submit">
-                      <i className="bi bi-check-lg me-1" />
+                      <i aria-hidden="true" className="bi bi-check-lg me-1" />
                       Save Changes
                     </button>
                   </div>
@@ -6884,7 +6896,7 @@ export default function Home() {
                     </button>
                     {songEditor === "new" && (
                       <button className="btn btn-primary" type="submit">
-                        <i className="bi bi-check-lg me-1" />
+                        <i aria-hidden="true" className="bi bi-check-lg me-1" />
                         Save Song
                       </button>
                     )}
@@ -7155,12 +7167,12 @@ export default function Home() {
                       />
                     </div>
                     <div className="col-12 col-lg-6">
-                      <label
-                        className="form-label"
-                        htmlFor="text-scripture-reference"
-                      >
-                        Scripture Reference
-                      </label>
+                      <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+                        <label className="form-label mb-0" htmlFor="text-scripture-reference">Scripture Reference</label>
+                        <button type="button" className="btn btn-sm btn-outline-primary" ref={openBibleButtonRef} onClick={openBibleFromText}>
+                          <i className="bi bi-book me-1" aria-hidden="true" /> Open Bible
+                        </button>
+                      </div>
                       <textarea
                         className="form-control"
                         id="text-scripture-reference"
@@ -7311,7 +7323,7 @@ export default function Home() {
                         </small>
                         <div>
                       <button className="btn btn-primary" type="submit">
-                        <i className="bi bi-check-lg me-1" />
+                        <i aria-hidden="true" className="bi bi-check-lg me-1" />
                         Save Text
                       </button>
                         </div>
@@ -7322,7 +7334,7 @@ export default function Home() {
                         className="btn btn-danger"
                         onClick={deleteText}
                       >
-                        <i className="bi bi-trash3 me-1" />
+                        <i aria-hidden="true" className="bi bi-trash3 me-1" />
                         Delete Text
                       </button>
                     )}
@@ -7332,6 +7344,10 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+
+      {textEditor && textBibleRequest && (
+        <TextBibleDialog passage={textBibleRequest.passage} onClose={returnFromBible} />
       )}
 
       {textMergeRequest && (
@@ -7444,7 +7460,7 @@ export default function Home() {
                   )}
                   onClick={() => void mergeTexts()}
                 >
-                  <i className="bi bi-intersect me-1" />
+                  <i aria-hidden="true" className="bi bi-intersect me-1" />
                   Merge Texts
                 </button>
               </div>
@@ -7636,7 +7652,7 @@ export default function Home() {
                           Save This New Vorrade Once To Start Automatic Saving.
                         </small>
                         <button className="btn btn-primary" type="submit">
-                          <i className="bi bi-check-lg me-1" />
+                          <i aria-hidden="true" className="bi bi-check-lg me-1" />
                           Save Vorrade
                         </button>
                       </>
@@ -7646,7 +7662,7 @@ export default function Home() {
                         className="btn btn-danger"
                         onClick={() => void deleteVorrade()}
                       >
-                        <i className="bi bi-trash3 me-1" />
+                        <i aria-hidden="true" className="bi bi-trash3 me-1" />
                         Delete Vorrade
                       </button>
                     )}
@@ -7755,7 +7771,7 @@ export default function Home() {
                   }
                   onClick={() => void mergeVorraden()}
                 >
-                  <i className="bi bi-intersect me-1" />
+                  <i aria-hidden="true" className="bi bi-intersect me-1" />
                   Merge Vorraden
                 </button>
               </div>

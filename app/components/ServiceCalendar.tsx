@@ -179,7 +179,7 @@ export default function ServiceCalendar({
     event: KeyboardEvent<HTMLDivElement>,
     service: CalendarService,
   ) {
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       onOpenService(service);
     }
@@ -268,7 +268,7 @@ export default function ServiceCalendar({
           title="Previous Month"
           onClick={() => moveMonth(-1)}
         >
-          <i className="bi bi-chevron-left" />
+          <i aria-hidden="true" className="bi bi-chevron-left" />
         </button>
         <div className="calendar-month-control" ref={monthControlRef}>
           <button
@@ -278,7 +278,7 @@ export default function ServiceCalendar({
             onClick={() => setPickerOpen((open) => !open)}
           >
             {monthNames[monthIndex]} {monthYear}
-            <i className={`bi ${pickerOpen ? "bi-chevron-up" : "bi-chevron-down"} ms-2`} />
+            <i aria-hidden="true" className={`bi ${pickerOpen ? "bi-chevron-up" : "bi-chevron-down"} ms-2`} />
           </button>
           {pickerOpen && (
             <div className="calendar-month-picker card shadow-sm">
@@ -340,7 +340,7 @@ export default function ServiceCalendar({
           title="Next Month"
           onClick={() => moveMonth(1)}
         >
-          <i className="bi bi-chevron-right" />
+          <i aria-hidden="true" className="bi bi-chevron-right" />
         </button>
       </div>
 
