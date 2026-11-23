@@ -171,6 +171,7 @@ function BiblePicker({ current, onChoose, onClose }: {
 
 function VerseList({ passage, verses }: { passage: BiblePassage; verses: BibleVerse[] }) {
   const [selected, setSelected] = useState(() => selectPassageVerses(verses, passage));
+  const [rangeStart, setRangeStart] = useState<number | null>(null);
   const [copyStatus, setCopyStatus] = useState<"" | "copied" | "manual">("");
   const anchor = useRef<HTMLButtonElement>(null);
   const manualCopy = useRef<HTMLTextAreaElement>(null);
@@ -192,13 +193,28 @@ function VerseList({ passage, verses }: { passage: BiblePassage; verses: BibleVe
     }
   }, [copyStatus]);
 
-  function changeSelection(next: number[]) {
+  function changeSelection(next: number[], nextRangeStart: number | null = null) {
     setSelected(next);
+    setRangeStart(nextRangeStart);
     setCopyStatus("");
     copyAttempt.current += 1;
   }
 
+  function selectVerse(index: number) {
+    if (rangeStart !== null && rangeStart !== index) {
+      const first = Math.min(rangeStart, index);
+      const last = Math.max(rangeStart, index);
+      const range = Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
+      changeSelection([...new Set([...selected, ...range])]);
+    } else if (selected.includes(index)) {
+      changeSelection(selected.filter((item) => item !== index));
+    } else {
+      changeSelection([...selected, index], index);
+    }
+  }
+
   async function copyVerses(button: HTMLButtonElement) {
+    setRangeStart(null);
     const attempt = ++copyAttempt.current;
     try {
       await navigator.clipboard.writeText(copyText);
@@ -237,7 +253,7 @@ function VerseList({ passage, verses }: { passage: BiblePassage; verses: BibleVe
               key={index}
               className={`list-group-item list-group-item-action bible-verse${pressed ? " list-group-item-primary" : ""}`}
               aria-pressed={pressed}
-              onClick={() => changeSelection(pressed ? selected.filter((item) => item !== index) : [...selected, index])}
+              onClick={() => selectVerse(index)}
             >
               <span className="bible-verse-number">{number}</span>
               <span>{bibleVerseText(source)}</span>
@@ -287,6 +303,23 @@ export default function BibleReader({ initialPassage = null, inEditor = false }:
   const toolbar = useRef<HTMLDivElement>(null);
   const currentBook = passage.book.id;
   const shouldRead = picking !== "initial";
+
+  useEffect(() => {
+    if (!window.matchMedia("(pointer: coarse)").matches) return;
+    // Safari can send its own gesture events for a pinch on touch screens.
+    const preventBiblePinch = (event: Event) => {
+      if (document.querySelector(".bible-reader-page") ||
+          (event.target instanceof Element && event.target.closest(".bible-dialog"))) {
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("gesturestart", preventBiblePinch, { passive: false });
+    document.addEventListener("gesturechange", preventBiblePinch, { passive: false });
+    return () => {
+      document.removeEventListener("gesturestart", preventBiblePinch);
+      document.removeEventListener("gesturechange", preventBiblePinch);
+    };
+  }, []);
 
   useEffect(() => {
     if (!shouldRead) return;

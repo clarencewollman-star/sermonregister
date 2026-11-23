@@ -1898,6 +1898,15 @@ button.nav-link {
   outline-offset: -2px;
 }
 
+@media (pointer: coarse) {
+  body:has(.bible-reader-page),
+  .bible-reader-page,
+  .bible-dialog,
+  .bible-dialog .modal-body {
+    touch-action: pan-x pan-y;
+  }
+}
+
 .bible-verse-number {
   color: var(--bs-secondary-color);
   font-variant-numeric: tabular-nums;
