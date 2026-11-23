@@ -305,23 +305,6 @@ export default function BibleReader({ initialPassage = null, inEditor = false }:
   const shouldRead = picking !== "initial";
 
   useEffect(() => {
-    if (!window.matchMedia("(pointer: coarse)").matches) return;
-    // Safari can send its own gesture events for a pinch on touch screens.
-    const preventBiblePinch = (event: Event) => {
-      if (document.querySelector(".bible-reader-page") ||
-          (event.target instanceof Element && event.target.closest(".bible-dialog"))) {
-        event.preventDefault();
-      }
-    };
-    document.addEventListener("gesturestart", preventBiblePinch, { passive: false });
-    document.addEventListener("gesturechange", preventBiblePinch, { passive: false });
-    return () => {
-      document.removeEventListener("gesturestart", preventBiblePinch);
-      document.removeEventListener("gesturechange", preventBiblePinch);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!shouldRead) return;
     const controller = new AbortController();
     async function loadBook() {

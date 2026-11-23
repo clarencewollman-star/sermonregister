@@ -3590,6 +3590,8 @@ export default function Home() {
             className="btn btn-link d-lg-none px-2"
             type="button"
             aria-label="Open More Menu"
+            aria-controls="register-sidebar"
+            aria-expanded={sidebarOpen}
             onClick={() => setSidebarOpen(true)}
           >
             <i aria-hidden="true" className="bi bi-list fs-4" />
@@ -3625,6 +3627,7 @@ export default function Home() {
       </header>
 
       <aside
+        id="register-sidebar"
         className={`app-sidebar bg-body-secondary shadow ${sidebarOpen ? "sidebar-open" : ""}`}
         data-bs-theme="dark"
       >
@@ -3656,7 +3659,7 @@ export default function Home() {
                     onClick={() => changeSection(item.label)}
                   >
                     <i aria-hidden="true" className={`nav-icon bi ${item.icon}`} />
-                    <p>
+                    <span className="sidebar-nav-label">
                       {item.label}
                       {item.label === "Settings" &&
                         backupOverview &&
@@ -3672,7 +3675,7 @@ export default function Home() {
                             }
                           />
                         )}
-                    </p>
+                    </span>
                   </button>
                 </li>
               ))}

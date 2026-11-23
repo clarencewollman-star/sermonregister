@@ -3,6 +3,7 @@ import "admin-lte/dist/css/adminlte.min.css";
 import "bootstrap-icons/font/bootstrap-icons.css";
 import "react-image-crop/dist/ReactCrop.css";
 import "./globals.css";
+import PhonePinchProtection from "./components/PhonePinchProtection";
 
 export const metadata: Metadata = {
   title: "Lehr Register",
@@ -19,6 +20,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body className="layout-fixed sidebar-expand-lg bg-body-tertiary">
+        <PhonePinchProtection />
         {children}
       </body>
     </html>
