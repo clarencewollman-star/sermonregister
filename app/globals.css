@@ -2242,6 +2242,11 @@ html.iphone-no-pinch,
   touch-action: pan-x pan-y;
 }
 
+/* iPhone Safari can zoom when focusing a text field smaller than 16px. */
+.iphone-no-pinch :is(input:not([type]), input[type="text"], input[type="search"], textarea) {
+  font-size: max(16px, 1rem);
+}
+
 .attachment-pdf-page {
   display: grid;
   width: min(100%, 90rem);
